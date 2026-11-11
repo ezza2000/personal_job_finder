@@ -68,6 +68,9 @@ function App() {
   const [emailPreview, setEmailPreview] = useState<EmailPreview | null>(null)
   const [emailError, setEmailError] = useState('')
   const [emailBusy, setEmailBusy] = useState(false)
+  const [gmailConnected, setGmailConnected] = useState(false)
+  const [gmailClientConfigured, setGmailClientConfigured] = useState(false)
+  const [emailPreviewSource, setEmailPreviewSource] = useState<'manual' | 'gmail'>('manual')
 
   const loadJobs = async () => {
     setLoading(true); setError('')
@@ -128,7 +131,7 @@ function App() {
   const update = (key: keyof Form, value: string) => setForm(current => current ? ({ ...current, [key]: value }) : current)
 
   const previewSeekEmail = async () => {
-    setEmailBusy(true); setEmailError(''); setEmailPreview(null)
+    setEmailBusy(true); setEmailError(''); setEmailPreview(null); setEmailPreviewSource('manual')
     try {
       const response = await fetch(`${API}/api/imports/seek-grad-email/preview`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -145,11 +148,45 @@ function App() {
     if (!emailPreview) return
     setEmailBusy(true); setEmailError('')
     try {
-      const response = await fetch(`${API}/api/imports/seek-grad-email/${emailPreview.batch_id}/commit`, { method: 'POST' })
+      const endpoint = emailPreviewSource === 'gmail'
+        ? `${API}/api/imports/gmail/seek-grad/${emailPreview.batch_id}/commit`
+        : `${API}/api/imports/seek-grad-email/${emailPreview.batch_id}/commit`
+      const response = await fetch(endpoint, { method: 'POST' })
       const result = await response.json()
       if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : 'Could not import these listings.')
       await loadJobs(); setEmailOpen(false); setEmailPreview(null); setEmailBody('')
     } catch (e) { setEmailError(e instanceof Error ? e.message : 'Could not import these listings.') }
+    finally { setEmailBusy(false) }
+  }
+
+  const loadGmailStatus = async () => {
+    try {
+      const response = await fetch(`${API}/api/email/gmail/status`)
+      if (!response.ok) return
+      const result = await response.json()
+      setGmailConnected(result.connected); setGmailClientConfigured(result.client_configured)
+    } catch { /* Gmail remains optional; manual imports still work. */ }
+  }
+
+  const connectGmail = async () => {
+    setEmailBusy(true); setEmailError('')
+    try {
+      const response = await fetch(`${API}/api/email/gmail/connect`, { method: 'POST' })
+      const result = await response.json()
+      if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : 'Could not connect Gmail.')
+      setGmailConnected(true)
+    } catch (e) { setEmailError(e instanceof Error ? e.message : 'Could not connect Gmail.') }
+    finally { setEmailBusy(false); void loadGmailStatus() }
+  }
+
+  const previewGmail = async () => {
+    setEmailBusy(true); setEmailError(''); setEmailPreview(null); setEmailPreviewSource('gmail')
+    try {
+      const response = await fetch(`${API}/api/imports/gmail/seek-grad/preview`, { method: 'POST' })
+      const result = await response.json()
+      if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : 'Could not read Gmail alerts.')
+      setEmailPreview(result)
+    } catch (e) { setEmailError(e instanceof Error ? e.message : 'Could not read Gmail alerts.') }
     finally { setEmailBusy(false) }
   }
 
@@ -174,7 +211,7 @@ function App() {
     <main className="main-area">
       <header className="topbar"><div className="breadcrumb">Workspace <span>/</span> <strong>Job dashboard</strong></div><div className="topbar-right"><span className={`sync-dot ${apiOnline ? '' : 'offline'}`}/>{apiOnline ? 'API connected' : 'API offline'} <button className="avatar-small">E</button></div></header>
       <div className="content-wrap">
-        <section className="welcome-row"><div><div className="eyebrow">{new Intl.DateTimeFormat('en-AU', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date()).toUpperCase()}</div><h1>Your next move starts here.</h1><p className="welcome-sub">A clearer view of the roles that fit you.</p></div><div className="header-actions"><button className="icon-button mobile-filter-toggle" onClick={() => setMobileFilters(!mobileFilters)} aria-label="Toggle filters"><SlidersHorizontal size={18}/></button><button className="import-email-button" onClick={() => {setEmailOpen(true);setEmailError('');setEmailPreview(null)}}><Mail size={15}/> Import SEEK email</button><button className="refresh-button" onClick={() => void loadJobs()}><ArrowDownUp size={15}/> Refresh listings</button></div></section>
+        <section className="welcome-row"><div><div className="eyebrow">{new Intl.DateTimeFormat('en-AU', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date()).toUpperCase()}</div><h1>Your next move starts here.</h1><p className="welcome-sub">A clearer view of the roles that fit you.</p></div><div className="header-actions"><button className="icon-button mobile-filter-toggle" onClick={() => setMobileFilters(!mobileFilters)} aria-label="Toggle filters"><SlidersHorizontal size={18}/></button><button className="import-email-button" onClick={() => {setEmailOpen(true);setEmailError('');setEmailPreview(null);setEmailPreviewSource('manual');void loadGmailStatus()}}><Mail size={15}/> Import SEEK email</button><button className="refresh-button" onClick={() => void loadJobs()}><ArrowDownUp size={15}/> Refresh listings</button></div></section>
 
         <section className="stat-grid">
           <div className="stat-card"><div className="stat-top"><span>New opportunities</span><span className="stat-icon green"><Sparkles size={16}/></span></div><div className="stat-value">{newCount}<small> roles</small></div><div className="stat-note">Ready for your review</div></div>
@@ -218,7 +255,9 @@ function App() {
     </section></div>}
     {emailOpen && <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setEmailOpen(false) }}><section className="detail-modal email-import-modal" role="dialog" aria-modal="true" aria-labelledby="email-modal-title">
       <div className="modal-head"><div><div className="section-kicker">SEEK GRAD ALERT</div><h2 id="email-modal-title">Import jobs from an email</h2><div className="modal-company">Paste the forwarded alert text. We preview listings and duplicates before saving.</div></div><button className="icon-button" onClick={() => setEmailOpen(false)} aria-label="Close import"><X size={19}/></button></div>
-      <div className="modal-scroll"><div className="email-import-help">In Gmail, open the forwarded message, choose More → Download message, then select the .eml file below. You can also paste the message body. The preview ignores listings whose closing date has passed.</div>
+      <div className="modal-scroll"><div className="email-import-help">Gmail connection is optional. It requests read-only mailbox access and searches only the configured label plus SEEK Grad sender. Gmail still grants this scope access to mailbox messages and settings. The preview ignores listings whose closing date has passed.</div>
+        <div className="gmail-connect-row"><span>{gmailConnected ? 'Gmail connected' : gmailClientConfigured ? 'OAuth file ready' : 'Gmail not configured'}</span><button className="cancel-button" disabled={emailBusy || !gmailClientConfigured} onClick={() => void connectGmail()}>{gmailConnected ? 'Reconnect Gmail' : 'Connect Gmail'}</button><button className="save-button" disabled={emailBusy || !gmailConnected} onClick={() => void previewGmail()}>{emailBusy ? 'Reading...' : 'Preview Gmail alerts'}</button></div>
+        <div className="email-import-help">To import manually, open a forwarded alert in Gmail, choose More → Download message, then select its .eml file, or paste the message body.</div>
         <label className="email-file-label">Choose email file<input type="file" accept=".eml,message/rfc822" onChange={e => void loadEmailFile(e)}/></label>
         <label className="email-body-label">Forwarded email body<textarea rows={12} value={emailBody} onChange={e => {setEmailBody(e.target.value);setEmailPreview(null)}} placeholder="Paste the SEEK Grad alert body here..."/></label>
         {emailError && <div className="error-banner"><CircleHelp size={16}/>{emailError}</div>}

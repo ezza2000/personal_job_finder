@@ -33,6 +33,12 @@ from app.schemas import (
     ProfileUpdate,
     SeekGradEmailRequest,
 )
+from app.services.gmail_import import (
+    GmailSetupError,
+    authorize_gmail,
+    gmail_status,
+    read_seek_alerts,
+)
 from app.services.matching import analyze_job
 from app.services.normalization import compare_jobs, normalize_text
 from app.services.prosple_rss import FeedImportError, fetch_prosple_feed
@@ -537,6 +543,79 @@ def preview_seek_grad_email(
     return result
 
 
+@router.get("/email/gmail/status")
+def get_gmail_status() -> dict[str, object]:
+    """Return whether the local OAuth client and token files exist."""
+    settings = get_settings()
+    return gmail_status(settings.gmail_oauth_client_file, settings.gmail_token_file)
+
+
+@router.post("/email/gmail/connect")
+def connect_gmail() -> dict[str, str]:
+    """Open Google's local installed-app consent flow for Gmail read-only access."""
+    settings = get_settings()
+    try:
+        authorize_gmail(settings.gmail_oauth_client_file, settings.gmail_token_file)
+    except GmailSetupError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"status": "connected", "message": "Gmail connected with read-only access."}
+
+
+@router.post("/imports/gmail/seek-grad/preview", status_code=status.HTTP_201_CREATED)
+def preview_gmail_seek_alerts(db: Session = Depends(get_db)) -> dict[str, object]:
+    """Search the configured Gmail label and create a duplicate-aware preview."""
+    settings = get_settings()
+    try:
+        messages = read_seek_alerts(
+            settings.gmail_oauth_client_file,
+            settings.gmail_token_file,
+            settings.gmail_seek_label,
+            settings.gmail_seek_query,
+        )
+    except GmailSetupError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not messages:
+        raise HTTPException(
+            status_code=422, detail="No matching SEEK alert emails found in that label."
+        )
+
+    entries: list[dict[str, str | None]] = []
+    expired_count = 0
+    found_count = 0
+    for message in messages:
+        try:
+            parsed = parse_seek_grad_email(message["raw"])
+        except SeekEmailParseError:
+            continue
+        found_count += int(parsed["found_count"])
+        expired_count += int(parsed["expired_count"])
+        entries.extend(parsed["jobs"])
+    if not entries:
+        raise HTTPException(
+            status_code=422,
+            detail="No active supported SEEK Grad listings were found in the matching emails.",
+        )
+
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(
+        output, fieldnames=["title", "company", "location", "original_url", "source", "status"]
+    )
+    writer.writeheader()
+    for entry in entries:
+        writer.writerow({**entry, "source": "SEEK Grad Alert", "status": "new"})
+    result = preview_csv(
+        CsvPreviewRequest(filename="SEEK Grad email preview - Gmail", content=output.getvalue()), db
+    )
+    result.update(
+        {
+            "source": "Gmail · SEEK Grad Alert",
+            "found_count": found_count,
+            "expired_skipped": expired_count,
+        }
+    )
+    return result
+
+
 @router.post("/imports/csv/{batch_id}/commit")
 def commit_csv(batch_id: int, db: Session = Depends(get_db)) -> dict[str, object]:
     """Import valid rows from a preview; exact URLs are reported and left untouched."""
@@ -644,6 +723,15 @@ def commit_seek_grad_email(batch_id: int, db: Session = Depends(get_db)) -> dict
     batch = db.get(ImportBatch, batch_id)
     if batch is None or not batch.filename.startswith("SEEK Grad email preview - "):
         raise HTTPException(status_code=404, detail="SEEK Grad email preview not found")
+    return commit_csv(batch_id, db)
+
+
+@router.post("/imports/gmail/seek-grad/{batch_id}/commit")
+def commit_gmail_seek_grad(batch_id: int, db: Session = Depends(get_db)) -> dict[str, object]:
+    """Commit a reviewed Gmail SEEK Grad email preview."""
+    batch = db.get(ImportBatch, batch_id)
+    if batch is None or batch.filename != "SEEK Grad email preview - Gmail":
+        raise HTTPException(status_code=404, detail="Gmail SEEK Grad preview not found")
     return commit_csv(batch_id, db)
 
 

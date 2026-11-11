@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./job_finder.db"
     prosple_rss_url: str = ""
     prosple_rss_allowed_hosts: str = "prosple.com,gradaustralia.com.au"
+    gmail_oauth_client_file: str = "secrets/gmail-oauth-client.json"
+    gmail_token_file: str = "secrets/gmail-token.json"
+    gmail_seek_label: str = "SEEK Job Alerts"
+    gmail_seek_query: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
