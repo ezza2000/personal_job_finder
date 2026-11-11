@@ -39,6 +39,7 @@ class Job(Base):
     description: Mapped[str | None] = mapped_column(Text)
     experience_required: Mapped[str | None] = mapped_column(String(240))
     date_posted: Mapped[date | None] = mapped_column(Date)
+    closing_date: Mapped[date | None] = mapped_column(Date)
     date_discovered: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

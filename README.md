@@ -62,7 +62,7 @@ pytest
 ## Data model
 
 - `job_sources` records source/import channels and their last run outcome.
-- `jobs` stores normalized listing fields, source URL, discovery/posting dates, and company/title keys for later duplicate matching.
+- `jobs` stores normalized listing fields, source URL, discovery/posting/closing dates, and company/title keys for later duplicate matching.
 - `applications` stores status and the application date, resume version, cover letter, contact, follow-up date, and interview notes.
 - `candidate_profile` stores editable education, placement, experience summary, and skills for the later matching stage.
 - `import_batches` retains a validated CSV preview until it is explicitly committed.
@@ -104,7 +104,7 @@ Prosple documents public RSS feeds for career directories. Configure a feed URL 
 
 The app does not search or scrape SEEK. SEEK's current website terms prohibit automated access and collection without an approved technical interface or prior written consent. A forwarded SEEK Grad alert parser is available for pasted, uploaded, or Gmail-fetched messages; inspect duplicate matches, then explicitly import the preview. The parser does not follow tracked links and skips listings whose email alert includes an expired closing date. Gmail access requires a separate local OAuth setup; the Codex Gmail connection does not act as credentials for this app. Keep the OAuth client JSON and token in the ignored local `secrets/` directory.
 
-CSV requires `title` and `company`. Optional headers include `location`, `salary`, `employment_type`, `description`, `experience_required`, `date_posted` (`YYYY-MM-DD`), `original_url`, `source`, `status`, `application_date`, `resume_version`, `cover_letter`, `contact_person`, `follow_up_date`, and `interview_notes`.
+CSV requires `title` and `company`. Optional headers include `location`, `salary`, `employment_type`, `description`, `experience_required`, `date_posted` and `closing_date` (`YYYY-MM-DD`), `original_url`, `source`, `status`, `application_date`, `resume_version`, `cover_letter`, `contact_person`, `follow_up_date`, and `interview_notes`.
 
 ## Matching method
 

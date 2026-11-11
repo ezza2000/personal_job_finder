@@ -139,6 +139,7 @@ def create_job(payload: JobCreate, db: Session = Depends(get_db)) -> Job:
         description=payload.description,
         experience_required=payload.experience_required,
         date_posted=payload.date_posted,
+        closing_date=payload.closing_date,
         original_url=url,
         company_normalized=normalize_text(payload.company),
         title_normalized=normalize_text(payload.title),
@@ -283,6 +284,13 @@ def _csv_row(raw: dict[str, str | None], row_number: int) -> dict[str, object]:
         except ValueError:
             errors.append("Application date must use YYYY-MM-DD")
 
+    closing_date = fields.get("closing_date") or ""
+    if closing_date:
+        try:
+            date.fromisoformat(closing_date)
+        except ValueError:
+            errors.append("Closing date must use YYYY-MM-DD")
+
     follow_up_date = fields.get("follow_up_date") or ""
     if follow_up_date:
         try:
@@ -315,6 +323,7 @@ def _csv_row(raw: dict[str, str | None], row_number: int) -> dict[str, object]:
         or fields.get("experience")
         or None,
         "date_posted": date_posted or None,
+        "closing_date": closing_date or None,
         "original_url": url or None,
         "source_name": fields.get("source") or fields.get("source_name") or "CSV Import",
         "application": {
@@ -538,7 +547,15 @@ def preview_seek_grad_email(
     output = io.StringIO(newline="")
     writer = csv.DictWriter(
         output,
-        fieldnames=["title", "company", "location", "original_url", "source", "status"],
+        fieldnames=[
+            "title",
+            "company",
+            "location",
+            "original_url",
+            "closing_date",
+            "source",
+            "status",
+        ],
     )
     writer.writeheader()
     for entry in entries:
@@ -548,6 +565,7 @@ def preview_seek_grad_email(
                 "company": entry["company"],
                 "location": entry["location"],
                 "original_url": entry["original_url"],
+                "closing_date": entry["closing_date"],
                 "source": "SEEK Grad Alert",
                 "status": "new",
             }
@@ -600,7 +618,16 @@ def preview_gmail_seek_alerts(db: Session = Depends(get_db)) -> dict[str, object
 
     output = io.StringIO(newline="")
     writer = csv.DictWriter(
-        output, fieldnames=["title", "company", "location", "original_url", "source", "status"]
+        output,
+        fieldnames=[
+            "title",
+            "company",
+            "location",
+            "original_url",
+            "closing_date",
+            "source",
+            "status",
+        ],
     )
     writer.writeheader()
     for entry in entries:
@@ -610,6 +637,7 @@ def preview_gmail_seek_alerts(db: Session = Depends(get_db)) -> dict[str, object
                 "company": entry["company"],
                 "location": entry["location"],
                 "original_url": entry["original_url"],
+                "closing_date": entry["closing_date"],
                 "source": "SEEK Grad Alert",
                 "status": "new",
             }
@@ -689,7 +717,15 @@ def sync_gmail_seek_alerts(db: Session = Depends(get_db)) -> dict[str, object]:
         output = io.StringIO(newline="")
         writer = csv.DictWriter(
             output,
-            fieldnames=["title", "company", "location", "original_url", "source", "status"],
+            fieldnames=[
+                "title",
+                "company",
+                "location",
+                "original_url",
+                "closing_date",
+                "source",
+                "status",
+            ],
         )
         writer.writeheader()
         for entry in new_entries:
@@ -699,6 +735,7 @@ def sync_gmail_seek_alerts(db: Session = Depends(get_db)) -> dict[str, object]:
                     "company": entry["company"],
                     "location": entry["location"],
                     "original_url": entry["original_url"],
+                    "closing_date": entry["closing_date"],
                     "source": "SEEK Grad Alert",
                     "status": "new",
                 }
@@ -750,6 +787,7 @@ def commit_csv(batch_id: int, db: Session = Depends(get_db)) -> dict[str, object
             continue
         app_data = dict(job_data.pop("application"))
         posted_value = job_data.pop("date_posted")
+        closing_value = job_data.pop("closing_date")
         source_name = str(job_data.pop("source_name", "CSV Import"))
         source_type = (
             "rss"
@@ -762,6 +800,7 @@ def commit_csv(batch_id: int, db: Session = Depends(get_db)) -> dict[str, object
         job = Job(
             **job_data,
             date_posted=date.fromisoformat(str(posted_value)) if posted_value else None,
+            closing_date=date.fromisoformat(str(closing_value)) if closing_value else None,
             company_normalized=normalize_text(str(job_data["company"])),
             title_normalized=normalize_text(str(job_data["title"])),
             source_id=source.id,

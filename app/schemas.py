@@ -31,6 +31,7 @@ class JobCreate(BaseModel):
     description: str | None = None
     experience_required: str | None = Field(default=None, max_length=240)
     date_posted: date | None = None
+    closing_date: date | None = None
     original_url: HttpUrl | None = None
     source_name: str = Field(default="Manual Entry", max_length=120)
     application: ApplicationFields = Field(default_factory=ApplicationFields)
@@ -70,6 +71,7 @@ class JobRead(BaseModel):
     description: str | None
     experience_required: str | None
     date_posted: date | None
+    closing_date: date | None = None
     date_discovered: datetime
     original_url: str | None
     source: "JobSourceRead | None"

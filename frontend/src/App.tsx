@@ -20,7 +20,7 @@ type Match = {
 type Job = {
   id: number; title: string; company: string; location?: string | null; salary_text?: string | null
   employment_type?: string | null; description?: string | null; experience_required?: string | null
-  date_posted?: string | null; date_discovered: string; original_url?: string | null
+  date_posted?: string | null; closing_date?: string | null; date_discovered: string; original_url?: string | null
   source?: { name: string } | null; application?: AppDetails | null; match?: Match | null
 }
 type Form = AppDetails
@@ -41,6 +41,7 @@ const areaTerms: Record<string, string[]> = {
   Bayside: ['bayside', 'brighton', 'sandringham', 'hampton', 'cheltenham', 'mentone', 'beaumaris', 'black rock', 'parkdale', 'mordialloc', 'edithvale', 'aspendale'],
 }
 const dateText = (value?: string | null) => value ? new Date(value).toLocaleDateString('en-AU', { day: 'numeric', month: 'short' }) : 'Recently added'
+const closingDateText = (value: string) => new Date(`${value}T00:00:00`).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' })
 const emptyForm = (job: Job): Form => ({
   status: job.application?.status || 'new', application_date: job.application?.application_date || '',
   resume_version: job.application?.resume_version || '', cover_letter: job.application?.cover_letter || '',
@@ -272,7 +273,7 @@ function App() {
           {error && <div className="error-banner"><CircleHelp size={16}/>{error}<button onClick={() => void loadJobs()}><span>Retry</span></button></div>}
           {loading ? <div className="empty-state"><div className="loader"/><strong>Finding your opportunities...</strong><span>Loading your listings and match scores.</span></div> : filtered.length === 0 ? <div className="empty-state"><div className="empty-icon"><Search size={22}/></div><strong>{jobs.length ? 'No roles match these filters' : 'Your next opportunity is waiting'}</strong><span>{jobs.length ? 'Try widening your search or clearing a filter.' : 'Add jobs through the API or import a CSV to see your dashboard take shape.'}</span>{jobs.length > 0 && <button className="text-button" onClick={() => {setQuery('');setArea('All Melbourne');setSuburb('all');setStatus('all')}}>Clear all filters</button>}</div> : <div className="job-list">{filtered.map(job => <article className="job-card" key={job.id}>
             <div className="job-logo">{job.company.slice(0, 1).toUpperCase()}</div>
-            <div className="job-main"><div className="job-meta"><span>{job.company}</span><span className="meta-dot">·</span><span>{job.source?.name || 'Manual entry'}</span></div><h3>{job.title}</h3><div className="job-details"><span><MapPin size={14}/>{job.location || 'Location not listed'}</span>{job.employment_type && <span><BriefcaseBusiness size={14}/>{job.employment_type}</span>}{job.salary_text && <span className="salary">{job.salary_text}</span>}</div><div className="job-foot"><span className="date-label"><CalendarDays size={13}/>{job.date_posted ? `Posted ${dateText(job.date_posted)}` : `Added ${dateText(job.date_discovered)}`}</span><span className={`status-pill ${job.application?.status || 'new'}`}>{job.application?.status || 'new'}</span></div></div>
+            <div className="job-main"><div className="job-meta"><span>{job.company}</span><span className="meta-dot">·</span><span>{job.source?.name || 'Manual entry'}</span></div><h3>{job.title}</h3><div className="job-details"><span><MapPin size={14}/>{job.location || 'Location not listed'}</span>{job.employment_type && <span><BriefcaseBusiness size={14}/>{job.employment_type}</span>}{job.salary_text && <span className="salary">{job.salary_text}</span>}{job.closing_date && <span className="closing-date"><CalendarDays size={14}/>Closes {closingDateText(job.closing_date)}</span>}</div><div className="job-foot"><span className="date-label"><CalendarDays size={13}/>{job.date_posted ? `Posted ${dateText(job.date_posted)}` : `Added ${dateText(job.date_discovered)}`}</span><span className={`status-pill ${job.application?.status || 'new'}`}>{job.application?.status || 'new'}</span></div></div>
             <div className="job-match"><div className={`score-ring ${scoreTone(job.match?.score || 0)}`}><span>{job.match?.score ?? '—'}</span></div><span className="score-caption">FIT SCORE</span></div>
             <div className="job-actions"><button className="details-button" onClick={() => setSelected(job)}>Track role <ArrowUpRight size={15}/></button>{job.original_url && <a className="details-button apply-link" href={job.original_url} target="_blank" rel="noreferrer">Open role <ExternalLink size={14}/></a>}<button className="delete-button" onClick={() => void deleteJob(job)} disabled={deletingJobId === job.id} aria-label={`Delete ${job.title}`}><Trash2 size={14}/><span>{deletingJobId === job.id ? 'Deleting…' : 'Delete'}</span></button></div>
           </article>)}</div>}
