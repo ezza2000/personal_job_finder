@@ -95,6 +95,10 @@ class JobSourceRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     name: str
+    source_type: str
+    enabled: bool
+    last_checked_at: datetime | None
+    last_error: str | None
 
 
 class ProfileUpdate(BaseModel):

@@ -3,7 +3,7 @@
 import csv
 import io
 import logging
-from datetime import date
+from datetime import UTC, date, datetime
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from app.api.dependencies import get_db
+from app.config import get_settings
 from app.db.models import (
     Application,
     CandidateProfile,
@@ -26,12 +27,14 @@ from app.schemas import (
     JobCreate,
     JobMatchResult,
     JobRead,
+    JobSourceRead,
     JobWithMatch,
     ProfileRead,
     ProfileUpdate,
 )
 from app.services.matching import analyze_job
 from app.services.normalization import compare_jobs, normalize_text
+from app.services.prosple_rss import FeedImportError, fetch_prosple_feed
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["job tracking"])
@@ -173,6 +176,12 @@ def get_job_match(job_id: int, db: Session = Depends(get_db)) -> JobMatchResult:
     profile = _get_profile(db)
     db.commit()
     return analyze_job(job, profile)
+
+
+@router.get("/sources", response_model=list[JobSourceRead])
+def list_sources(db: Session = Depends(get_db)) -> list[JobSource]:
+    """List configured import channels and their last outcome."""
+    return list(db.scalars(select(JobSource).order_by(JobSource.name)))
 
 
 @router.patch("/jobs/{job_id}/application", response_model=JobRead)
@@ -381,6 +390,104 @@ def preview_csv(payload: CsvPreviewRequest, db: Session = Depends(get_db)) -> di
     }
 
 
+@router.post("/imports/prosple/rss/preview", status_code=status.HTTP_201_CREATED)
+def preview_prosple_rss(db: Session = Depends(get_db)) -> dict[str, object]:
+    """Fetch a configured public Prosple RSS feed and save a reviewable import preview."""
+    settings = get_settings()
+    if not settings.prosple_rss_url.strip():
+        raise HTTPException(
+            status_code=409,
+            detail="Set PROSPLE_RSS_URL in .env before previewing a Prosple feed",
+        )
+    allowed_hosts = {
+        host.strip().casefold().lstrip(".")
+        for host in settings.prosple_rss_allowed_hosts.split(",")
+        if host.strip()
+    }
+    source = _get_source(db, "Prosple RSS", "rss")
+    source.last_checked_at = datetime.now(UTC)
+    try:
+        entries = fetch_prosple_feed(settings.prosple_rss_url, allowed_hosts)
+    except FeedImportError as exc:
+        source.last_error = str(exc)
+        db.commit()
+        logger.warning("Prosple RSS preview failed: %s", exc)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    source.last_error = None
+    existing_jobs = list(db.scalars(select(Job)))
+    existing_by_url = {job.original_url: job for job in existing_jobs if job.original_url}
+    prior_rows: list[tuple[int, dict[str, object]]] = []
+    rows: list[dict[str, object]] = []
+    for row_number, entry in enumerate(entries, start=2):
+        row = _csv_row(entry, row_number)
+        job_data = row["job"]
+        matches = _find_duplicates(str(job_data["title"]), str(job_data["company"]), existing_jobs)
+        url = job_data["original_url"]
+        if url and url in existing_by_url:
+            exact = existing_by_url[url]
+            matches.append(
+                {
+                    "job_id": exact.id,
+                    "title": exact.title,
+                    "company": exact.company,
+                    "similarity": 100,
+                    "reasons": ["Original URL matches exactly"],
+                }
+            )
+        for prior_number, prior in prior_rows:
+            prior_data = prior["job"]
+            if url and url == prior_data["original_url"]:
+                matches.append(
+                    {
+                        "row_number": prior_number,
+                        "title": prior_data["title"],
+                        "company": prior_data["company"],
+                        "similarity": 100,
+                        "reasons": ["Original URL matches exactly"],
+                    }
+                )
+                continue
+            comparison = compare_jobs(
+                str(job_data["title"]),
+                str(job_data["company"]),
+                str(prior_data["title"]),
+                str(prior_data["company"]),
+            )
+            if comparison:
+                similarity, reasons = comparison
+                matches.append(
+                    {
+                        "row_number": prior_number,
+                        "title": prior_data["title"],
+                        "company": prior_data["company"],
+                        "similarity": similarity,
+                        "reasons": reasons,
+                    }
+                )
+        row["duplicates"] = matches
+        rows.append(row)
+        if row["valid"]:
+            prior_rows.append((row_number, row))
+
+    if not rows:
+        db.commit()
+        raise HTTPException(status_code=422, detail="The Prosple RSS feed had no usable job links")
+    batch = ImportBatch(filename="Prosple RSS preview", rows=rows)
+    db.add(batch)
+    db.commit()
+    return {
+        "batch_id": batch.id,
+        "filename": batch.filename,
+        "source": source.name,
+        "total_rows": len(rows),
+        "valid_rows": sum(bool(row["valid"]) for row in rows),
+        "invalid_rows": sum(not bool(row["valid"]) for row in rows),
+        "possible_duplicate_rows": sum(bool(row["duplicates"]) for row in rows),
+        "rows": rows,
+    }
+
+
 @router.post("/imports/csv/{batch_id}/commit")
 def commit_csv(batch_id: int, db: Session = Depends(get_db)) -> dict[str, object]:
     """Import valid rows from a preview; exact URLs are reported and left untouched."""
@@ -410,7 +517,8 @@ def commit_csv(batch_id: int, db: Session = Depends(get_db)) -> dict[str, object
         app_data = dict(job_data.pop("application"))
         posted_value = job_data.pop("date_posted")
         source_name = str(job_data.pop("source_name", "CSV Import"))
-        source = _get_source(db, source_name, "csv_import")
+        source_type = "rss" if source_name == "Prosple RSS" else "csv_import"
+        source = _get_source(db, source_name, source_type)
         job = Job(
             **job_data,
             date_posted=date.fromisoformat(str(posted_value)) if posted_value else None,
@@ -464,6 +572,15 @@ def commit_csv(batch_id: int, db: Session = Depends(get_db)) -> dict[str, object
         "possible_duplicates_flagged": duplicates_flagged,
         "invalid_rows_skipped": sum(not bool(row["valid"]) for row in batch.rows),
     }
+
+
+@router.post("/imports/prosple/rss/{batch_id}/commit")
+def commit_prosple_rss(batch_id: int, db: Session = Depends(get_db)) -> dict[str, object]:
+    """Commit valid jobs from a previously reviewed Prosple RSS preview."""
+    batch = db.get(ImportBatch, batch_id)
+    if batch is None or batch.filename != "Prosple RSS preview":
+        raise HTTPException(status_code=404, detail="Prosple RSS preview not found")
+    return commit_csv(batch_id, db)
 
 
 @router.get("/duplicates")
