@@ -4,14 +4,14 @@ A personal job search aggregator and application tracker focused on graduate and
 
 ## Current stage
 
-Milestone 3 adds explainable profile-to-job scores, matched/missing skills, and experience/education flags. Milestone 2 provides manual job entry, application tracking, CSV preview/import, duplicate review, and an editable candidate profile. The API is available through FastAPI's interactive docs at `http://127.0.0.1:8000/docs`. The React dashboard, source integrations, scheduling, and email reports remain future milestones.
+Milestone 4 provides a responsive React dashboard for job discovery, profile match review, location/status filtering, sorting, and application tracking. Milestone 3 adds explainable profile-to-job scores, matched/missing skills, and experience/education flags. Milestone 2 provides manual job entry, application tracking, CSV preview/import, duplicate review, and an editable candidate profile. Job source integrations, scheduling, and email reports remain future milestones.
 
 ## Architecture
 
 - Python 3.11+ and FastAPI for the API.
 - SQLAlchemy 2 and Alembic for persistence and schema changes.
 - SQLite locally, with `DATABASE_URL` ready to point at PostgreSQL later.
-- React is planned for the responsive desktop/mobile dashboard.
+- React, TypeScript, and Vite power the responsive desktop/mobile dashboard in `frontend/`.
 - Source adapters will be isolated by provider and enabled only for documented feeds/APIs or user-provided imports that are permitted by the source.
 
 ## Setup
@@ -26,6 +26,16 @@ uvicorn app.main:app --reload
 ```
 
 Open `http://127.0.0.1:8000/health` to check the API or `/docs` to try its endpoints. The database path and logging level can be changed in `.env`.
+
+In a second terminal, run the dashboard:
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+Open `http://127.0.0.1:5173`. The frontend expects the API at `http://127.0.0.1:8000`; set `VITE_API_URL` in `frontend/.env.local` to use a different API address. The dashboard uses the API's CORS allowlist for local Vite development.
 
 ## Tests
 
@@ -65,7 +75,7 @@ The score is a transparent heuristic for prioritizing listings, not a prediction
 1. **Foundation (complete):** Configuration, logging, database models/migrations, and API skeleton.
 2. **Manual tracking and imports (complete):** Job entry, application status/details, CSV import preview, validation, duplicate review, and editable candidate background/skills profile.
 3. **Matching (complete):** Explainable score out of 100, matching reasons, matched/missing skills, and experience/qualification flags based on the editable profile.
-4. **Responsive dashboard:** React listings, overview counts, filters, sort by recency/relevance, status and application detail editing, and mobile layouts. Location filtering prioritizes Melbourne CBD, South East Melbourne, and Bayside, with suburb-level filtering; commuting distance is a later enhancement if geocoding/routing data is available.
+4. **Responsive dashboard (complete):** React listings, overview counts, search, Melbourne CBD/South East Melbourne/Bayside and suburb filters, status filtering, relevance/recency sorting, match explanations, status and application detail editing, and mobile layouts. Commuting distance remains a later enhancement if geocoding/routing data is available.
 5. **Permitted job sources:** Add source adapters individually after reviewing terms and access methods. Evaluate Prosple RSS and documented public company/ATS feeds; use manual/CSV imports or user-provided alert emails where direct automated access is not permitted. Email-alert mailbox/Gmail-label integration remains a future opt-in integration requiring explicit account authorization.
 6. **Daily automation and reports:** Configurable schedule and time zone, per-source failure isolation, and a morning report of the 10–15 most relevant new jobs with title, company, location, salary when available, score, explanation, and direct link. Exclude applied jobs and previously reported jobs unless a meaningful listing change is detected.
 7. **Portfolio finish:** Automated tests, setup and architecture documentation, sample data, screenshots, and deployment guidance.
