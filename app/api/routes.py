@@ -1,0 +1,476 @@
+"""Manual job entry, application tracking, CSV import, and profile routes."""
+
+import csv
+import io
+import logging
+from datetime import date
+from urllib.parse import urlparse
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.orm import Session, joinedload
+
+from app.api.dependencies import get_db
+from app.db.models import (
+    Application,
+    CandidateProfile,
+    DuplicateCandidate,
+    ImportBatch,
+    Job,
+    JobSource,
+)
+from app.schemas import (
+    ApplicationUpdate,
+    CsvPreviewRequest,
+    DuplicateReview,
+    JobCreate,
+    JobRead,
+    ProfileRead,
+    ProfileUpdate,
+)
+from app.services.normalization import compare_jobs, normalize_text
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/api", tags=["job tracking"])
+MAX_CSV_ROWS = 1000
+
+
+def _get_source(db: Session, name: str, source_type: str) -> JobSource:
+    normalized_name = name.strip() or "CSV Import"
+    source = db.scalar(select(JobSource).where(JobSource.name == normalized_name))
+    if source is None:
+        source = JobSource(name=normalized_name, source_type=source_type)
+        db.add(source)
+        db.flush()
+    return source
+
+
+def _get_profile(db: Session) -> CandidateProfile:
+    profile = db.get(CandidateProfile, 1)
+    if profile is None:
+        profile = CandidateProfile(
+            id=1,
+            education="Bachelor of Computer Science, Deakin University",
+            placement="Computer Science professional placement at ROVing Intelligence",
+            experience_summary=(
+                "Python data processing, video processing, underwater robotics, and software "
+                "development. Experience with Docker, AWS, and MySQL."
+            ),
+            skills=["Python", "C++", "C#", "SQL", "Git", "Linux", "Docker", "AWS", "MySQL"],
+        )
+        db.add(profile)
+        db.flush()
+    return profile
+
+
+def _record_duplicate(
+    db: Session, first_id: int, second_id: int, similarity: int, reasons: list[str]
+) -> None:
+    first_id, second_id = sorted((first_id, second_id))
+    existing = db.scalar(
+        select(DuplicateCandidate).where(
+            DuplicateCandidate.first_job_id == first_id,
+            DuplicateCandidate.second_job_id == second_id,
+        )
+    )
+    if existing is None:
+        db.add(
+            DuplicateCandidate(
+                first_job_id=first_id,
+                second_job_id=second_id,
+                similarity=similarity,
+                reasons=reasons,
+            )
+        )
+
+
+def _find_duplicates(title: str, company: str, jobs: list[Job]) -> list[dict[str, object]]:
+    matches = []
+    for job in jobs:
+        result = compare_jobs(title, company, job.title, job.company)
+        if result:
+            score, reasons = result
+            matches.append(
+                {
+                    "job_id": job.id,
+                    "title": job.title,
+                    "company": job.company,
+                    "similarity": score,
+                    "reasons": reasons,
+                }
+            )
+    return matches
+
+
+@router.post("/jobs", response_model=JobRead, status_code=status.HTTP_201_CREATED)
+def create_job(payload: JobCreate, db: Session = Depends(get_db)) -> Job:
+    """Create a manually entered job and its initial application status."""
+    url = str(payload.original_url) if payload.original_url else None
+    if url:
+        existing = db.scalar(select(Job).where(Job.original_url == url))
+        if existing:
+            raise HTTPException(
+                status_code=409,
+                detail={"message": "This URL is already saved", "existing_job_id": existing.id},
+            )
+
+    existing_jobs = list(db.scalars(select(Job)))
+    source = _get_source(db, payload.source_name, "manual")
+    job = Job(
+        title=payload.title,
+        company=payload.company,
+        location=payload.location,
+        salary_text=payload.salary_text,
+        employment_type=payload.employment_type,
+        description=payload.description,
+        experience_required=payload.experience_required,
+        date_posted=payload.date_posted,
+        original_url=url,
+        company_normalized=normalize_text(payload.company),
+        title_normalized=normalize_text(payload.title),
+        source_id=source.id,
+    )
+    db.add(job)
+    db.flush()
+    db.add(Application(job_id=job.id, **payload.application.model_dump()))
+    db.flush()
+    for match in _find_duplicates(job.title, job.company, existing_jobs):
+        _record_duplicate(
+            db, job.id, int(match["job_id"]), int(match["similarity"]), match["reasons"]
+        )
+    db.commit()
+    return db.scalar(select(Job).options(joinedload(Job.application)).where(Job.id == job.id))
+
+
+@router.get("/jobs", response_model=list[JobRead])
+def list_jobs(db: Session = Depends(get_db)) -> list[Job]:
+    return list(
+        db.scalars(
+            select(Job).options(joinedload(Job.application)).order_by(Job.date_discovered.desc())
+        )
+    )
+
+
+@router.patch("/jobs/{job_id}/application", response_model=JobRead)
+def update_application(
+    job_id: int, payload: ApplicationUpdate, db: Session = Depends(get_db)
+) -> Job:
+    job = db.scalar(select(Job).options(joinedload(Job.application)).where(Job.id == job_id))
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.application is None:
+        job.application = Application(job_id=job.id)
+    changes = payload.model_dump(exclude_unset=True)
+    if "status" in changes and changes["status"] is None:
+        raise HTTPException(status_code=422, detail="Status cannot be null")
+    if changes.get("status") == "applied" and "application_date" not in changes:
+        job.application.application_date = date.today()
+    for key, value in changes.items():
+        setattr(job.application, key, value)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+@router.get("/profile", response_model=ProfileRead)
+def get_profile(db: Session = Depends(get_db)) -> CandidateProfile:
+    profile = _get_profile(db)
+    db.commit()
+    db.refresh(profile)
+    return profile
+
+
+@router.put("/profile", response_model=ProfileRead)
+def update_profile(payload: ProfileUpdate, db: Session = Depends(get_db)) -> CandidateProfile:
+    profile = _get_profile(db)
+    for key, value in payload.model_dump().items():
+        setattr(profile, key, value)
+    db.commit()
+    db.refresh(profile)
+    return profile
+
+
+def _csv_row(raw: dict[str, str | None], row_number: int) -> dict[str, object]:
+    fields = {
+        normalize_text(key).replace(" ", "_"): (value or "").strip()
+        for key, value in raw.items()
+        if key is not None
+    }
+    errors: list[str] = []
+    title = fields.get("title") or fields.get("job_title") or fields.get("position") or ""
+    company = fields.get("company") or fields.get("company_name") or fields.get("employer") or ""
+    if not title:
+        errors.append("Title is required")
+    if not company:
+        errors.append("Company is required")
+
+    url = fields.get("original_url") or fields.get("job_url") or fields.get("url") or ""
+    if url and urlparse(url).scheme not in {"http", "https"}:
+        errors.append("URL must start with http:// or https://")
+
+    date_posted = fields.get("date_posted") or ""
+    if date_posted:
+        try:
+            date.fromisoformat(date_posted)
+        except ValueError:
+            errors.append("Date posted must use YYYY-MM-DD")
+
+    app_date = fields.get("application_date") or ""
+    if app_date:
+        try:
+            date.fromisoformat(app_date)
+        except ValueError:
+            errors.append("Application date must use YYYY-MM-DD")
+
+    follow_up_date = fields.get("follow_up_date") or ""
+    if follow_up_date:
+        try:
+            date.fromisoformat(follow_up_date)
+        except ValueError:
+            errors.append("Follow-up date must use YYYY-MM-DD")
+
+    status_value = (fields.get("status") or "new").casefold()
+    if status_value not in {
+        "new",
+        "interested",
+        "saved",
+        "applied",
+        "interview",
+        "rejected",
+        "closed",
+    }:
+        errors.append(
+            "Status must be New, Interested, Saved, Applied, Interview, Rejected, or Closed"
+        )
+
+    data: dict[str, object] = {
+        "title": title,
+        "company": company,
+        "location": fields.get("location") or None,
+        "salary_text": fields.get("salary") or fields.get("salary_text") or None,
+        "employment_type": fields.get("employment_type") or None,
+        "description": fields.get("description") or None,
+        "experience_required": fields.get("experience_required")
+        or fields.get("experience")
+        or None,
+        "date_posted": date_posted or None,
+        "original_url": url or None,
+        "source_name": fields.get("source") or fields.get("source_name") or "CSV Import",
+        "application": {
+            "status": status_value,
+            "application_date": app_date or None,
+            "resume_version": fields.get("resume_version") or None,
+            "cover_letter": fields.get("cover_letter") or None,
+            "contact_person": fields.get("contact_person") or None,
+            "follow_up_date": fields.get("follow_up_date") or None,
+            "interview_notes": fields.get("interview_notes") or None,
+        },
+    }
+    return {
+        "row_number": row_number,
+        "valid": not errors,
+        "errors": errors,
+        "job": data,
+        "duplicates": [],
+    }
+
+
+@router.post("/imports/csv/preview", status_code=status.HTTP_201_CREATED)
+def preview_csv(payload: CsvPreviewRequest, db: Session = Depends(get_db)) -> dict[str, object]:
+    """Validate CSV content and persist a preview for explicit commit."""
+    try:
+        reader = csv.DictReader(io.StringIO(payload.content.lstrip("\ufeff")))
+        if not reader.fieldnames or not any(name.strip() for name in reader.fieldnames):
+            raise HTTPException(status_code=422, detail="CSV must include a header row")
+        rows = [_csv_row(raw, number) for number, raw in enumerate(reader, start=2)]
+    except csv.Error as exc:
+        raise HTTPException(status_code=422, detail=f"Could not parse CSV: {exc}") from exc
+    if not rows:
+        raise HTTPException(status_code=422, detail="CSV contains no data rows")
+    if len(rows) > MAX_CSV_ROWS:
+        raise HTTPException(status_code=413, detail=f"CSV is limited to {MAX_CSV_ROWS} rows")
+
+    existing_jobs = list(db.scalars(select(Job)))
+    existing_by_url = {job.original_url: job for job in existing_jobs if job.original_url}
+    valid_prior: list[tuple[int, dict[str, object]]] = []
+    for row in rows:
+        if not row["valid"]:
+            continue
+        job_data = row["job"]
+        matches = _find_duplicates(str(job_data["title"]), str(job_data["company"]), existing_jobs)
+        url = job_data["original_url"]
+        if url and url in existing_by_url:
+            exact = existing_by_url[url]
+            matches.append(
+                {
+                    "job_id": exact.id,
+                    "title": exact.title,
+                    "company": exact.company,
+                    "similarity": 100,
+                    "reasons": ["Original URL matches exactly"],
+                }
+            )
+        for prior_row_number, prior in valid_prior:
+            prior_data = prior["job"]
+            if url and url == prior_data["original_url"]:
+                matches.append(
+                    {
+                        "row_number": prior_row_number,
+                        "title": prior_data["title"],
+                        "company": prior_data["company"],
+                        "similarity": 100,
+                        "reasons": ["Original URL matches exactly"],
+                    }
+                )
+                continue
+            result = compare_jobs(
+                str(job_data["title"]),
+                str(job_data["company"]),
+                str(prior_data["title"]),
+                str(prior_data["company"]),
+            )
+            if result:
+                score, reasons = result
+                matches.append(
+                    {
+                        "row_number": prior_row_number,
+                        "title": prior_data["title"],
+                        "company": prior_data["company"],
+                        "similarity": score,
+                        "reasons": reasons,
+                    }
+                )
+        row["duplicates"] = matches
+        valid_prior.append((int(row["row_number"]), row))
+
+    batch = ImportBatch(filename=payload.filename, rows=rows)
+    db.add(batch)
+    db.commit()
+    return {
+        "batch_id": batch.id,
+        "filename": batch.filename,
+        "total_rows": len(rows),
+        "valid_rows": sum(bool(row["valid"]) for row in rows),
+        "invalid_rows": sum(not bool(row["valid"]) for row in rows),
+        "possible_duplicate_rows": sum(bool(row["duplicates"]) for row in rows),
+        "rows": rows,
+    }
+
+
+@router.post("/imports/csv/{batch_id}/commit")
+def commit_csv(batch_id: int, db: Session = Depends(get_db)) -> dict[str, object]:
+    """Import valid rows from a preview; exact URLs are reported and left untouched."""
+    batch = db.get(ImportBatch, batch_id)
+    if batch is None:
+        raise HTTPException(status_code=404, detail="Import preview not found")
+    if batch.status != "preview":
+        raise HTTPException(
+            status_code=409, detail="This import preview has already been committed"
+        )
+
+    existing_jobs = list(db.scalars(select(Job)))
+    initial_jobs = list(existing_jobs)
+    known_urls = {job.original_url for job in existing_jobs if job.original_url}
+    imported: list[int] = []
+    skipped_exact: list[int] = []
+    duplicates_flagged = 0
+
+    for row in batch.rows:
+        if not row["valid"]:
+            continue
+        job_data = dict(row["job"])
+        url = job_data["original_url"]
+        if url and url in known_urls:
+            skipped_exact.append(int(row["row_number"]))
+            continue
+        app_data = dict(job_data.pop("application"))
+        posted_value = job_data.pop("date_posted")
+        source_name = str(job_data.pop("source_name", "CSV Import"))
+        source = _get_source(db, source_name, "csv_import")
+        job = Job(
+            **job_data,
+            date_posted=date.fromisoformat(str(posted_value)) if posted_value else None,
+            company_normalized=normalize_text(str(job_data["company"])),
+            title_normalized=normalize_text(str(job_data["title"])),
+            source_id=source.id,
+        )
+        db.add(job)
+        db.flush()
+        app_data["application_date"] = (
+            date.fromisoformat(app_data["application_date"])
+            if app_data["application_date"]
+            else None
+        )
+        app_data["follow_up_date"] = (
+            date.fromisoformat(app_data["follow_up_date"]) if app_data["follow_up_date"] else None
+        )
+        db.add(Application(job_id=job.id, **app_data))
+        imported.append(job.id)
+        known_urls.add(url)
+
+        for existing in initial_jobs:
+            result = compare_jobs(job.title, job.company, existing.title, existing.company)
+            if result:
+                score, reasons = result
+                _record_duplicate(db, job.id, existing.id, score, reasons)
+                duplicates_flagged += 1
+        for other_id in imported[:-1]:
+            other = db.get(Job, other_id)
+            result = (
+                compare_jobs(job.title, job.company, other.title, other.company) if other else None
+            )
+            if result:
+                score, reasons = result
+                _record_duplicate(db, job.id, other_id, score, reasons)
+                duplicates_flagged += 1
+
+    batch.status = "committed"
+    db.commit()
+    logger.info(
+        "CSV import %s committed: %s jobs, %s exact URLs skipped",
+        batch_id,
+        len(imported),
+        len(skipped_exact),
+    )
+    return {
+        "batch_id": batch_id,
+        "imported_count": len(imported),
+        "imported_job_ids": imported,
+        "exact_duplicate_rows_skipped": skipped_exact,
+        "possible_duplicates_flagged": duplicates_flagged,
+        "invalid_rows_skipped": sum(not bool(row["valid"]) for row in batch.rows),
+    }
+
+
+@router.get("/duplicates")
+def list_duplicates(db: Session = Depends(get_db)) -> list[dict[str, object]]:
+    candidates = db.scalars(
+        select(DuplicateCandidate).where(DuplicateCandidate.review_state == "needs_review")
+    )
+    results = []
+    for candidate in candidates:
+        first = db.get(Job, candidate.first_job_id)
+        second = db.get(Job, candidate.second_job_id)
+        if first and second:
+            results.append(
+                {
+                    "id": candidate.id,
+                    "similarity": candidate.similarity,
+                    "reasons": candidate.reasons,
+                    "first_job": JobRead.model_validate(first),
+                    "second_job": JobRead.model_validate(second),
+                }
+            )
+    return results
+
+
+@router.patch("/duplicates/{duplicate_id}")
+def review_duplicate(
+    duplicate_id: int, payload: DuplicateReview, db: Session = Depends(get_db)
+) -> dict[str, object]:
+    candidate = db.get(DuplicateCandidate, duplicate_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Duplicate candidate not found")
+    candidate.review_state = payload.review_state
+    db.commit()
+    return {"id": candidate.id, "review_state": candidate.review_state}
