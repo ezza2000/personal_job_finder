@@ -24,10 +24,13 @@ from app.schemas import (
     CsvPreviewRequest,
     DuplicateReview,
     JobCreate,
+    JobMatchResult,
     JobRead,
+    JobWithMatch,
     ProfileRead,
     ProfileUpdate,
 )
+from app.services.matching import analyze_job
 from app.services.normalization import compare_jobs, normalize_text
 
 logger = logging.getLogger(__name__)
@@ -142,13 +145,34 @@ def create_job(payload: JobCreate, db: Session = Depends(get_db)) -> Job:
     return db.scalar(select(Job).options(joinedload(Job.application)).where(Job.id == job.id))
 
 
-@router.get("/jobs", response_model=list[JobRead])
-def list_jobs(db: Session = Depends(get_db)) -> list[Job]:
-    return list(
+@router.get("/jobs", response_model=list[JobWithMatch])
+def list_jobs(db: Session = Depends(get_db)) -> list[JobWithMatch]:
+    profile = _get_profile(db)
+    db.commit()
+    jobs = list(
         db.scalars(
-            select(Job).options(joinedload(Job.application)).order_by(Job.date_discovered.desc())
+            select(Job)
+            .options(joinedload(Job.application), joinedload(Job.source))
+            .order_by(Job.date_discovered.desc())
         )
     )
+    return [
+        JobWithMatch(
+            **JobRead.model_validate(job).model_dump(exclude={"match"}),
+            match=analyze_job(job, profile),
+        )
+        for job in jobs
+    ]
+
+
+@router.get("/jobs/{job_id}/match", response_model=JobMatchResult)
+def get_job_match(job_id: int, db: Session = Depends(get_db)) -> JobMatchResult:
+    job = db.get(Job, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    profile = _get_profile(db)
+    db.commit()
+    return analyze_job(job, profile)
 
 
 @router.patch("/jobs/{job_id}/application", response_model=JobRead)

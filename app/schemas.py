@@ -74,6 +74,21 @@ class JobRead(BaseModel):
     original_url: str | None
     source: "JobSourceRead | None"
     application: ApplicationRead | None
+    match: "JobMatchResult | None" = None
+
+
+class JobMatchResult(BaseModel):
+    score: int = Field(ge=0, le=100)
+    explanation: str
+    reasons: list[str]
+    score_breakdown: dict[str, int]
+    matched_skills: list[str]
+    missing_skills: list[str]
+    experience_flags: list[str]
+
+
+class JobWithMatch(JobRead):
+    match: JobMatchResult
 
 
 class JobSourceRead(BaseModel):
