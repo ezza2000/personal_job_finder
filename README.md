@@ -73,6 +73,7 @@ pytest
 
 - `POST /api/jobs` manually creates a listing and initial status. An exact URL already in the database returns HTTP 409 with the existing job ID.
 - `GET /api/jobs` lists current jobs, tracking details, and a current match analysis.
+- `DELETE /api/jobs/{id}` removes a job, its application notes, and duplicate-review records.
 - `GET /api/jobs/{id}/match` returns the match analysis for one job.
 - `PATCH /api/jobs/{id}/application` changes status and application details. Moving to `applied` fills today's date when none is supplied.
 - `GET /api/profile` and `PUT /api/profile` read and update the candidate's editable background and skills.
@@ -87,7 +88,7 @@ pytest
 - `GET /api/email/gmail/status` reports whether local OAuth files exist.
 - `POST /api/email/gmail/connect` opens Google's installed-app consent flow and requests Gmail read-only access.
 - `POST /api/imports/gmail/seek-grad/preview` searches the configured Gmail label for SEEK Grad messages and returns a reviewable preview; `POST /api/imports/gmail/seek-grad/{batch_id}/commit` imports it after review.
-- `POST /api/email/gmail/sync` imports newly found supported SEEK Grad listings and skips exact URLs already saved. The dashboard calls it at startup when Gmail is connected.
+- `POST /api/email/gmail/sync` imports newly found supported SEEK Grad listings and skips exact URLs or matching title/company/location combinations already discovered in the last 60 days. The dashboard calls it at startup when Gmail is connected.
 
 ### Optional Gmail connection
 

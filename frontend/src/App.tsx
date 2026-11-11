@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowDownUp, ArrowUpRight, BriefcaseBusiness, CalendarDays, Check, ChevronDown,
   CircleHelp, Clock3, ExternalLink, Filter, Mail, MapPin, Search, SlidersHorizontal,
-  Sparkles, X,
+  Sparkles, Trash2, X,
 } from 'lucide-react'
 
 const API = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000'
@@ -74,6 +74,7 @@ function App() {
   const [emailPreviewSource, setEmailPreviewSource] = useState<'manual' | 'gmail'>('manual')
   const [gmailSyncStatus, setGmailSyncStatus] = useState('')
   const startupSyncStarted = useRef(false)
+  const [deletingJobId, setDeletingJobId] = useState<number | null>(null)
 
   const loadJobs = async () => {
     setLoading(true); setError('')
@@ -153,6 +154,18 @@ function App() {
   }
 
   const update = (key: keyof Form, value: string) => setForm(current => current ? ({ ...current, [key]: value }) : current)
+
+  const deleteJob = async (job: Job) => {
+    if (!window.confirm(`Delete “${job.title}” at ${job.company}? Its application notes will also be removed.`)) return
+    setDeletingJobId(job.id); setError('')
+    try {
+      const response = await fetch(`${API}/api/jobs/${job.id}`, { method: 'DELETE' })
+      if (!response.ok) throw new Error('Could not delete this role.')
+      setJobs(current => current.filter(item => item.id !== job.id))
+      if (selected?.id === job.id) { setSelected(null); setForm(null) }
+    } catch (e) { setError(e instanceof Error ? e.message : 'Could not delete this role.') }
+    finally { setDeletingJobId(null) }
+  }
 
   const previewSeekEmail = async () => {
     setEmailBusy(true); setEmailError(''); setEmailPreview(null); setEmailPreviewSource('manual')
@@ -261,7 +274,7 @@ function App() {
             <div className="job-logo">{job.company.slice(0, 1).toUpperCase()}</div>
             <div className="job-main"><div className="job-meta"><span>{job.company}</span><span className="meta-dot">·</span><span>{job.source?.name || 'Manual entry'}</span></div><h3>{job.title}</h3><div className="job-details"><span><MapPin size={14}/>{job.location || 'Location not listed'}</span>{job.employment_type && <span><BriefcaseBusiness size={14}/>{job.employment_type}</span>}{job.salary_text && <span className="salary">{job.salary_text}</span>}</div><div className="job-foot"><span className="date-label"><CalendarDays size={13}/>{job.date_posted ? `Posted ${dateText(job.date_posted)}` : `Added ${dateText(job.date_discovered)}`}</span><span className={`status-pill ${job.application?.status || 'new'}`}>{job.application?.status || 'new'}</span></div></div>
             <div className="job-match"><div className={`score-ring ${scoreTone(job.match?.score || 0)}`}><span>{job.match?.score ?? '—'}</span></div><span className="score-caption">FIT SCORE</span></div>
-            <div className="job-actions"><button className="details-button" onClick={() => setSelected(job)}>Track role <ArrowUpRight size={15}/></button>{job.original_url && <a className="details-button apply-link" href={job.original_url} target="_blank" rel="noreferrer">Open role <ExternalLink size={14}/></a>}</div>
+            <div className="job-actions"><button className="details-button" onClick={() => setSelected(job)}>Track role <ArrowUpRight size={15}/></button>{job.original_url && <a className="details-button apply-link" href={job.original_url} target="_blank" rel="noreferrer">Open role <ExternalLink size={14}/></a>}<button className="delete-button" onClick={() => void deleteJob(job)} disabled={deletingJobId === job.id} aria-label={`Delete ${job.title}`}><Trash2 size={14}/><span>{deletingJobId === job.id ? 'Deleting…' : 'Delete'}</span></button></div>
           </article>)}</div>}
           {!loading && filtered.length > 0 && <div className="list-footer">Showing {filtered.length} of {jobs.length} roles <span>•</span> Sorted by {sort === 'relevance' ? 'best match' : sort === 'recent' ? 'most recent' : 'oldest first'}</div>}
         </section>

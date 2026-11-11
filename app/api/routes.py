@@ -3,11 +3,11 @@
 import csv
 import io
 import logging
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.api.dependencies import get_db
@@ -211,6 +211,26 @@ def update_application(
     db.commit()
     db.refresh(job)
     return job
+
+
+@router.delete("/jobs/{job_id}")
+def delete_job(job_id: int, db: Session = Depends(get_db)) -> dict[str, object]:
+    """Remove a job and its application notes and duplicate-review records."""
+    job = db.get(Job, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    db.execute(delete(Application).where(Application.job_id == job_id))
+    db.execute(
+        delete(DuplicateCandidate).where(
+            or_(
+                DuplicateCandidate.first_job_id == job_id,
+                DuplicateCandidate.second_job_id == job_id,
+            )
+        )
+    )
+    db.delete(job)
+    db.commit()
+    return {"deleted": True, "job_id": job_id}
 
 
 @router.get("/profile", response_model=ProfileRead)
@@ -642,8 +662,29 @@ def _read_gmail_seek_entries() -> tuple[list[dict[str, str | None]], int, int, i
 def sync_gmail_seek_alerts(db: Session = Depends(get_db)) -> dict[str, object]:
     """Import new supported listings from Gmail, skipping exact URLs already saved."""
     entries, found_count, expired_count, message_count = _read_gmail_seek_entries()
-    existing_urls = set(db.scalars(select(Job.original_url).where(Job.original_url.is_not(None))))
-    new_entries = [entry for entry in entries if entry["original_url"] not in existing_urls]
+    existing_jobs = list(db.scalars(select(Job)))
+    existing_urls = {job.original_url for job in existing_jobs if job.original_url}
+    recent_cutoff = date.today() - timedelta(days=60)
+    recent_signatures = {
+        (job.title_normalized, job.company_normalized, normalize_text(job.location or ""))
+        for job in existing_jobs
+        if job.date_discovered.date() >= recent_cutoff
+    }
+    new_entries = []
+    duplicate_count = 0
+    for entry in entries:
+        signature = (
+            normalize_text(entry["title"] or ""),
+            normalize_text(entry["company"] or ""),
+            normalize_text(entry["location"] or ""),
+        )
+        if entry["original_url"] in existing_urls or signature in recent_signatures:
+            duplicate_count += 1
+            continue
+        new_entries.append(entry)
+        if entry["original_url"]:
+            existing_urls.add(entry["original_url"])
+        recent_signatures.add(signature)
     if new_entries:
         output = io.StringIO(newline="")
         writer = csv.DictWriter(
@@ -676,7 +717,7 @@ def sync_gmail_seek_alerts(db: Session = Depends(get_db)) -> dict[str, object]:
         "messages_checked": message_count,
         "listings_found": found_count,
         "expired_skipped": expired_count,
-        "exact_duplicates_skipped": len(entries) - len(new_entries),
+        "duplicate_listings_skipped": duplicate_count,
         **imported,
     }
 
