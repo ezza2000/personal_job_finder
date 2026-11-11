@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   ArrowDownUp, ArrowUpRight, BriefcaseBusiness, CalendarDays, Check, ChevronDown,
-  CircleHelp, Clock3, ExternalLink, Filter, MapPin, Search, SlidersHorizontal,
+  CircleHelp, Clock3, ExternalLink, Filter, Mail, MapPin, Search, SlidersHorizontal,
   Sparkles, X,
 } from 'lucide-react'
 
@@ -24,6 +24,15 @@ type Job = {
   source?: { name: string } | null; application?: AppDetails | null; match?: Match | null
 }
 type Form = AppDetails
+type EmailPreview = {
+  batch_id: number; total_rows: number; valid_rows: number; invalid_rows: number
+  possible_duplicate_rows: number; found_count: number; expired_skipped: number
+  rows: Array<{
+    row_number: number; valid: boolean; errors: string[]
+    duplicates: Array<{ similarity: number; title: string; company: string }>
+    job: { title: string; company: string; location?: string | null; original_url?: string | null }
+  }>
+}
 
 const areas = ['All Melbourne', 'Melbourne CBD', 'South East Melbourne', 'Bayside']
 const areaTerms: Record<string, string[]> = {
@@ -54,6 +63,11 @@ function App() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [mobileFilters, setMobileFilters] = useState(false)
+  const [emailOpen, setEmailOpen] = useState(false)
+  const [emailBody, setEmailBody] = useState('')
+  const [emailPreview, setEmailPreview] = useState<EmailPreview | null>(null)
+  const [emailError, setEmailError] = useState('')
+  const [emailBusy, setEmailBusy] = useState(false)
 
   const loadJobs = async () => {
     setLoading(true); setError('')
@@ -113,6 +127,40 @@ function App() {
 
   const update = (key: keyof Form, value: string) => setForm(current => current ? ({ ...current, [key]: value }) : current)
 
+  const previewSeekEmail = async () => {
+    setEmailBusy(true); setEmailError(''); setEmailPreview(null)
+    try {
+      const response = await fetch(`${API}/api/imports/seek-grad-email/preview`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subject: 'Forwarded SEEK Grad alert', body: emailBody }),
+      })
+      const result = await response.json()
+      if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : 'Could not parse this email.')
+      setEmailPreview(result)
+    } catch (e) { setEmailError(e instanceof Error ? e.message : 'Could not parse this email.') }
+    finally { setEmailBusy(false) }
+  }
+
+  const commitSeekEmail = async () => {
+    if (!emailPreview) return
+    setEmailBusy(true); setEmailError('')
+    try {
+      const response = await fetch(`${API}/api/imports/seek-grad-email/${emailPreview.batch_id}/commit`, { method: 'POST' })
+      const result = await response.json()
+      if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : 'Could not import these listings.')
+      await loadJobs(); setEmailOpen(false); setEmailPreview(null); setEmailBody('')
+    } catch (e) { setEmailError(e instanceof Error ? e.message : 'Could not import these listings.') }
+    finally { setEmailBusy(false) }
+  }
+
+  const loadEmailFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    setEmailError(''); setEmailPreview(null)
+    try { setEmailBody(await file.text()) }
+    catch { setEmailError('Could not read that email file.') }
+  }
+
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand"><span className="brand-mark"><BriefcaseBusiness size={20}/></span><span>job<span className="brand-light">finder</span></span></div>
@@ -126,7 +174,7 @@ function App() {
     <main className="main-area">
       <header className="topbar"><div className="breadcrumb">Workspace <span>/</span> <strong>Job dashboard</strong></div><div className="topbar-right"><span className={`sync-dot ${apiOnline ? '' : 'offline'}`}/>{apiOnline ? 'API connected' : 'API offline'} <button className="avatar-small">E</button></div></header>
       <div className="content-wrap">
-        <section className="welcome-row"><div><div className="eyebrow">{new Intl.DateTimeFormat('en-AU', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date()).toUpperCase()}</div><h1>Your next move starts here.</h1><p className="welcome-sub">A clearer view of the roles that fit you.</p></div><div className="header-actions"><button className="icon-button mobile-filter-toggle" onClick={() => setMobileFilters(!mobileFilters)} aria-label="Toggle filters"><SlidersHorizontal size={18}/></button><button className="refresh-button" onClick={() => void loadJobs()}><ArrowDownUp size={15}/> Refresh listings</button></div></section>
+        <section className="welcome-row"><div><div className="eyebrow">{new Intl.DateTimeFormat('en-AU', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date()).toUpperCase()}</div><h1>Your next move starts here.</h1><p className="welcome-sub">A clearer view of the roles that fit you.</p></div><div className="header-actions"><button className="icon-button mobile-filter-toggle" onClick={() => setMobileFilters(!mobileFilters)} aria-label="Toggle filters"><SlidersHorizontal size={18}/></button><button className="import-email-button" onClick={() => {setEmailOpen(true);setEmailError('');setEmailPreview(null)}}><Mail size={15}/> Import SEEK email</button><button className="refresh-button" onClick={() => void loadJobs()}><ArrowDownUp size={15}/> Refresh listings</button></div></section>
 
         <section className="stat-grid">
           <div className="stat-card"><div className="stat-top"><span>New opportunities</span><span className="stat-icon green"><Sparkles size={16}/></span></div><div className="stat-value">{newCount}<small> roles</small></div><div className="stat-note">Ready for your review</div></div>
@@ -167,6 +215,15 @@ function App() {
           <div className="form-grid"><label>Application date<input type="date" value={form.application_date || ''} onChange={e => update('application_date', e.target.value)}/></label><label>Resume version<input placeholder="e.g. Software CV v2" value={form.resume_version || ''} onChange={e => update('resume_version', e.target.value)}/></label><label>Contact person<input placeholder="Name or email" value={form.contact_person || ''} onChange={e => update('contact_person', e.target.value)}/></label><label>Follow-up date<input type="date" value={form.follow_up_date || ''} onChange={e => update('follow_up_date', e.target.value)}/></label><label className="wide">Cover letter<textarea rows={3} placeholder="Paste or note your cover letter..." value={form.cover_letter || ''} onChange={e => update('cover_letter', e.target.value)}/></label><label className="wide">Interview notes<textarea rows={3} placeholder="Questions, people, next steps..." value={form.interview_notes || ''} onChange={e => update('interview_notes', e.target.value)}/></label></div>
         </div>
       </div><div className="modal-actions">{saved && <span className="saved-note"><Check size={15}/> Saved</span>}<button className="cancel-button" onClick={() => setSelected(null)}>Close</button><button className="save-button" disabled={saving} onClick={() => void saveApplication()}>{saving ? 'Saving...' : 'Save application'}</button></div>
+    </section></div>}
+    {emailOpen && <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setEmailOpen(false) }}><section className="detail-modal email-import-modal" role="dialog" aria-modal="true" aria-labelledby="email-modal-title">
+      <div className="modal-head"><div><div className="section-kicker">SEEK GRAD ALERT</div><h2 id="email-modal-title">Import jobs from an email</h2><div className="modal-company">Paste the forwarded alert text. We preview listings and duplicates before saving.</div></div><button className="icon-button" onClick={() => setEmailOpen(false)} aria-label="Close import"><X size={19}/></button></div>
+      <div className="modal-scroll"><div className="email-import-help">In Gmail, open the forwarded message, choose More → Download message, then select the .eml file below. You can also paste the message body. The preview ignores listings whose closing date has passed.</div>
+        <label className="email-file-label">Choose email file<input type="file" accept=".eml,message/rfc822" onChange={e => void loadEmailFile(e)}/></label>
+        <label className="email-body-label">Forwarded email body<textarea rows={12} value={emailBody} onChange={e => {setEmailBody(e.target.value);setEmailPreview(null)}} placeholder="Paste the SEEK Grad alert body here..."/></label>
+        {emailError && <div className="error-banner"><CircleHelp size={16}/>{emailError}</div>}
+        {emailPreview && <div className="email-preview"><div className="email-preview-summary"><strong>{emailPreview.valid_rows} ready to import</strong><span>{emailPreview.expired_skipped} expired skipped · {emailPreview.possible_duplicate_rows} possible duplicate(s)</span></div>{emailPreview.rows.map(row => <div className="email-preview-row" key={row.row_number}><strong>{row.job.title}</strong><span>{row.job.company || 'Company not found'} · {row.job.location || 'Location not listed'}</span>{row.duplicates.length > 0 && <small>Possible match: {row.duplicates.map(d => `${d.title} at ${d.company}`).join('; ')}</small>}{row.errors.length > 0 && <small>{row.errors.join(', ')}</small>}</div>)}</div>}
+      </div><div className="modal-actions"><button className="cancel-button" onClick={() => setEmailOpen(false)}>Close</button>{emailPreview ? <button className="save-button" disabled={emailBusy || emailPreview.valid_rows === 0} onClick={() => void commitSeekEmail()}>{emailBusy ? 'Importing...' : 'Import previewed jobs'}</button> : <button className="save-button" disabled={emailBusy || !emailBody.trim()} onClick={() => void previewSeekEmail()}>{emailBusy ? 'Reading alert...' : 'Preview jobs'}</button>}</div>
     </section></div>}
   </div>
 }

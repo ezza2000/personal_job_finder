@@ -118,5 +118,10 @@ class CsvPreviewRequest(BaseModel):
     content: str = Field(min_length=1, max_length=5_000_000)
 
 
+class SeekGradEmailRequest(BaseModel):
+    subject: str = Field(default="SEEK Grad job alert", max_length=300)
+    body: str = Field(min_length=1, max_length=2_000_000)
+
+
 class DuplicateReview(BaseModel):
     review_state: Literal["confirmed_duplicate", "confirmed_distinct"]

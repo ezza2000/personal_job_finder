@@ -4,7 +4,7 @@ A personal job search aggregator and application tracker focused on graduate and
 
 ## Current stage
 
-Milestone 5 is in progress: a preview-first Prosple RSS adapter is available, with duplicate checks and source run status. Milestone 4 provides a responsive React dashboard for job discovery, profile match review, location/status filtering, sorting, and application tracking. Milestone 3 adds explainable profile-to-job scores, matched/missing skills, and experience/education flags. Milestone 2 provides manual job entry, application tracking, CSV preview/import, duplicate review, and an editable candidate profile. SEEK job alerts, scheduling, and email reports remain future work.
+Milestone 5 is in progress: preview-first Prosple RSS and forwarded SEEK Grad email import are available, with duplicate review. Milestone 4 provides a responsive React dashboard for job discovery, profile match review, location/status filtering, sorting, and application tracking. Milestone 3 adds explainable profile-to-job scores, matched/missing skills, and experience/education flags. Milestone 2 provides manual job entry, application tracking, CSV preview/import, duplicate review, and an editable candidate profile. Automatic Gmail sync, scheduling, and daily email reports remain future work.
 
 ## Architecture
 
@@ -26,6 +26,14 @@ uvicorn app.main:app --reload
 ```
 
 Open `http://127.0.0.1:8000/health` to check the API or `/docs` to try its endpoints. The database path and logging level can be changed in `.env`.
+
+After the first-time setup above, start both local servers and open the dashboard with one command:
+
+```powershell
+.\run.ps1
+```
+
+The launcher checks ports 8090–8110, reuses a running API when available, writes the matching local frontend API URL, starts the dashboard, and opens it in your browser. Stop the server windows with `Ctrl+C` when you are finished.
 
 In a second terminal, run the dashboard:
 
@@ -66,6 +74,8 @@ pytest
 - `GET /api/sources` lists import channels and their last check/error state.
 - `POST /api/imports/prosple/rss/preview` fetches the configured public feed, checks possible duplicates, and stores a reviewable preview.
 - `POST /api/imports/prosple/rss/{batch_id}/commit` imports valid rows from that preview; exact URLs are skipped and possible duplicates are flagged.
+- `POST /api/imports/seek-grad-email/preview` accepts pasted forwarded text, HTML, or a downloaded `.eml` file, parses SEEK Grad cards, skips expired listings, and returns a duplicate-aware preview.
+- `POST /api/imports/seek-grad-email/{batch_id}/commit` imports valid listings from a reviewed email preview.
 
 ### Prosple RSS setup
 
@@ -73,7 +83,7 @@ Prosple documents public RSS feeds for career directories. Configure a feed URL 
 
 ### SEEK and email alerts
 
-The app does not search or scrape SEEK. SEEK's current website terms prohibit automated access and collection without an approved technical interface or prior written consent. A future SEEK path is user-provided alert email import; no SEEK job alert was present in the connected Gmail mailbox when this adapter was started, so a representative alert is still needed to implement and verify that parser. Direct Gmail mailbox sync would require a separate OAuth setup for this app; the app can query a dedicated label, but Google's read-only Gmail scope grants access to mailbox messages and settings. The Codex Gmail connection does not act as credentials for the local app. Configure any OAuth credentials only in local environment variables, never in source control.
+The app does not search or scrape SEEK. SEEK's current website terms prohibit automated access and collection without an approved technical interface or prior written consent. A forwarded SEEK Grad alert parser is available: use **Import SEEK email** in the dashboard, paste the message body or choose a downloaded `.eml` file, inspect duplicate matches, then explicitly import the preview. The parser does not follow tracked links and skips listings whose email alert includes an expired closing date. Direct Gmail mailbox sync would require a separate OAuth setup for this app; the app can query a dedicated label, but Google's read-only Gmail scope grants access to mailbox messages and settings. The Codex Gmail connection does not act as credentials for the local app. Configure any OAuth credentials only in local environment variables, never in source control.
 
 CSV requires `title` and `company`. Optional headers include `location`, `salary`, `employment_type`, `description`, `experience_required`, `date_posted` (`YYYY-MM-DD`), `original_url`, `source`, `status`, `application_date`, `resume_version`, `cover_letter`, `contact_person`, `follow_up_date`, and `interview_notes`.
 
@@ -87,7 +97,7 @@ The score is a transparent heuristic for prioritizing listings, not a prediction
 2. **Manual tracking and imports (complete):** Job entry, application status/details, CSV import preview, validation, duplicate review, and editable candidate background/skills profile.
 3. **Matching (complete):** Explainable score out of 100, matching reasons, matched/missing skills, and experience/qualification flags based on the editable profile.
 4. **Responsive dashboard (complete):** React listings, overview counts, search, Melbourne CBD/South East Melbourne/Bayside and suburb filters, status filtering, relevance/recency sorting, match explanations, status and application detail editing, and mobile layouts. Commuting distance remains a later enhancement if geocoding/routing data is available.
-5. **Permitted job sources (in progress):** Prosple RSS import preview/commit with duplicate handling and source status. Add documented public company/ATS feeds individually. SEEK website automation remains disabled unless SEEK provides written consent or an applicable approved interface; implement user-provided alert email parsing after a sample is available. Direct Gmail-label sync remains a separately configured, opt-in OAuth integration.
+5. **Permitted job sources (in progress):** Prosple RSS import preview/commit with duplicate handling and source status; forwarded SEEK Grad email preview/commit with expired-job filtering. Add documented public company/ATS feeds individually. SEEK website automation remains disabled unless SEEK provides written consent or an applicable approved interface. Direct Gmail-label sync remains a separately configured, opt-in OAuth integration.
 6. **Daily automation and reports:** Configurable schedule and time zone, per-source failure isolation, and a morning report of the 10–15 most relevant new jobs with title, company, location, salary when available, score, explanation, and direct link. Exclude applied jobs and previously reported jobs unless a meaningful listing change is detected.
 7. **Portfolio finish:** Automated tests, setup and architecture documentation, sample data, screenshots, and deployment guidance.
 

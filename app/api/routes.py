@@ -31,10 +31,12 @@ from app.schemas import (
     JobWithMatch,
     ProfileRead,
     ProfileUpdate,
+    SeekGradEmailRequest,
 )
 from app.services.matching import analyze_job
 from app.services.normalization import compare_jobs, normalize_text
 from app.services.prosple_rss import FeedImportError, fetch_prosple_feed
+from app.services.seek_grad_email import SeekEmailParseError, parse_seek_grad_email
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["job tracking"])
@@ -488,6 +490,53 @@ def preview_prosple_rss(db: Session = Depends(get_db)) -> dict[str, object]:
     }
 
 
+@router.post("/imports/seek-grad-email/preview", status_code=status.HTTP_201_CREATED)
+def preview_seek_grad_email(
+    payload: SeekGradEmailRequest, db: Session = Depends(get_db)
+) -> dict[str, object]:
+    """Parse a user-provided forwarded SEEK Grad alert into a reviewable preview."""
+    try:
+        parsed = parse_seek_grad_email(payload.body)
+    except SeekEmailParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    entries = parsed["jobs"]
+    if not entries:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Found {parsed['found_count']} listings, but all "
+                f"{parsed['expired_count']} have expired."
+            ),
+        )
+
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(
+        output,
+        fieldnames=["title", "company", "location", "original_url", "source", "status"],
+    )
+    writer.writeheader()
+    for entry in entries:
+        writer.writerow(
+            {
+                **entry,
+                "source": "SEEK Grad Alert",
+                "status": "new",
+            }
+        )
+    safe_subject = " ".join(payload.subject.split())[:160] or "SEEK Grad job alert"
+    result = preview_csv(
+        CsvPreviewRequest(
+            filename=f"SEEK Grad email preview - {safe_subject}",
+            content=output.getvalue(),
+        ),
+        db,
+    )
+    result["source"] = "SEEK Grad Alert"
+    result["found_count"] = parsed["found_count"]
+    result["expired_skipped"] = parsed["expired_count"]
+    return result
+
+
 @router.post("/imports/csv/{batch_id}/commit")
 def commit_csv(batch_id: int, db: Session = Depends(get_db)) -> dict[str, object]:
     """Import valid rows from a preview; exact URLs are reported and left untouched."""
@@ -517,7 +566,13 @@ def commit_csv(batch_id: int, db: Session = Depends(get_db)) -> dict[str, object
         app_data = dict(job_data.pop("application"))
         posted_value = job_data.pop("date_posted")
         source_name = str(job_data.pop("source_name", "CSV Import"))
-        source_type = "rss" if source_name == "Prosple RSS" else "csv_import"
+        source_type = (
+            "rss"
+            if source_name == "Prosple RSS"
+            else "email_import"
+            if source_name == "SEEK Grad Alert"
+            else "csv_import"
+        )
         source = _get_source(db, source_name, source_type)
         job = Job(
             **job_data,
@@ -580,6 +635,15 @@ def commit_prosple_rss(batch_id: int, db: Session = Depends(get_db)) -> dict[str
     batch = db.get(ImportBatch, batch_id)
     if batch is None or batch.filename != "Prosple RSS preview":
         raise HTTPException(status_code=404, detail="Prosple RSS preview not found")
+    return commit_csv(batch_id, db)
+
+
+@router.post("/imports/seek-grad-email/{batch_id}/commit")
+def commit_seek_grad_email(batch_id: int, db: Session = Depends(get_db)) -> dict[str, object]:
+    """Commit valid listings from a previously reviewed SEEK Grad email preview."""
+    batch = db.get(ImportBatch, batch_id)
+    if batch is None or not batch.filename.startswith("SEEK Grad email preview - "):
+        raise HTTPException(status_code=404, detail="SEEK Grad email preview not found")
     return commit_csv(batch_id, db)
 
 
