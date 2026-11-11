@@ -567,32 +567,11 @@ def connect_gmail() -> dict[str, str]:
 @router.post("/imports/gmail/seek-grad/preview", status_code=status.HTTP_201_CREATED)
 def preview_gmail_seek_alerts(db: Session = Depends(get_db)) -> dict[str, object]:
     """Search the configured Gmail label and create a duplicate-aware preview."""
-    settings = get_settings()
-    try:
-        messages = read_seek_alerts(
-            settings.gmail_oauth_client_file,
-            settings.gmail_token_file,
-            settings.gmail_seek_label,
-            settings.gmail_seek_query,
-        )
-    except GmailSetupError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if not messages:
+    entries, found_count, expired_count, message_count = _read_gmail_seek_entries()
+    if not message_count:
         raise HTTPException(
             status_code=422, detail="No matching SEEK alert emails found in that label."
         )
-
-    entries: list[dict[str, str | None]] = []
-    expired_count = 0
-    found_count = 0
-    for message in messages:
-        try:
-            parsed = parse_seek_grad_email(message["raw"])
-        except SeekEmailParseError:
-            continue
-        found_count += int(parsed["found_count"])
-        expired_count += int(parsed["expired_count"])
-        entries.extend(parsed["jobs"])
     if not entries:
         raise HTTPException(
             status_code=422,
@@ -626,6 +605,80 @@ def preview_gmail_seek_alerts(db: Session = Depends(get_db)) -> dict[str, object
         }
     )
     return result
+
+
+def _read_gmail_seek_entries() -> tuple[list[dict[str, str | None]], int, int, int]:
+    """Fetch and parse supported SEEK Grad alerts from the configured Gmail label."""
+    settings = get_settings()
+    try:
+        messages = read_seek_alerts(
+            settings.gmail_oauth_client_file,
+            settings.gmail_token_file,
+            settings.gmail_seek_label,
+            settings.gmail_seek_query,
+        )
+    except GmailSetupError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    entries: list[dict[str, str | None]] = []
+    expired_count = 0
+    found_count = 0
+    seen_urls: set[str] = set()
+    for message in messages:
+        try:
+            parsed = parse_seek_grad_email(message["raw"])
+        except SeekEmailParseError:
+            continue
+        found_count += int(parsed["found_count"])
+        expired_count += int(parsed["expired_count"])
+        for entry in parsed["jobs"]:
+            url = entry["original_url"]
+            if url and url not in seen_urls:
+                entries.append(entry)
+                seen_urls.add(url)
+    return entries, found_count, expired_count, len(messages)
+
+
+@router.post("/email/gmail/sync")
+def sync_gmail_seek_alerts(db: Session = Depends(get_db)) -> dict[str, object]:
+    """Import new supported listings from Gmail, skipping exact URLs already saved."""
+    entries, found_count, expired_count, message_count = _read_gmail_seek_entries()
+    existing_urls = set(db.scalars(select(Job.original_url).where(Job.original_url.is_not(None))))
+    new_entries = [entry for entry in entries if entry["original_url"] not in existing_urls]
+    if new_entries:
+        output = io.StringIO(newline="")
+        writer = csv.DictWriter(
+            output,
+            fieldnames=["title", "company", "location", "original_url", "source", "status"],
+        )
+        writer.writeheader()
+        for entry in new_entries:
+            writer.writerow(
+                {
+                    "title": entry["title"],
+                    "company": entry["company"],
+                    "location": entry["location"],
+                    "original_url": entry["original_url"],
+                    "source": "SEEK Grad Alert",
+                    "status": "new",
+                }
+            )
+        preview = preview_csv(
+            CsvPreviewRequest(
+                filename="SEEK Grad email preview - Gmail auto sync", content=output.getvalue()
+            ),
+            db,
+        )
+        imported = commit_csv(int(preview["batch_id"]), db)
+    else:
+        imported = {"imported_count": 0, "exact_duplicate_rows_skipped": []}
+    return {
+        "source": "Gmail · SEEK Grad Alert",
+        "messages_checked": message_count,
+        "listings_found": found_count,
+        "expired_skipped": expired_count,
+        "exact_duplicates_skipped": len(entries) - len(new_entries),
+        **imported,
+    }
 
 
 @router.post("/imports/csv/{batch_id}/commit")

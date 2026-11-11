@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowDownUp, ArrowUpRight, BriefcaseBusiness, CalendarDays, Check, ChevronDown,
   CircleHelp, Clock3, ExternalLink, Filter, Mail, MapPin, Search, SlidersHorizontal,
@@ -55,6 +55,7 @@ function App() {
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState('all')
+  const [view, setView] = useState<'all' | 'applied'>('all')
   const [area, setArea] = useState('All Melbourne')
   const [suburb, setSuburb] = useState('all')
   const [sort, setSort] = useState('relevance')
@@ -71,6 +72,8 @@ function App() {
   const [gmailConnected, setGmailConnected] = useState(false)
   const [gmailClientConfigured, setGmailClientConfigured] = useState(false)
   const [emailPreviewSource, setEmailPreviewSource] = useState<'manual' | 'gmail'>('manual')
+  const [gmailSyncStatus, setGmailSyncStatus] = useState('')
+  const startupSyncStarted = useRef(false)
 
   const loadJobs = async () => {
     setLoading(true); setError('')
@@ -82,7 +85,26 @@ function App() {
     } catch { setApiOnline(false); setError(`Could not reach the API at ${API}. Start the FastAPI server and refresh.`) }
     finally { setLoading(false) }
   }
-  useEffect(() => { void loadJobs() }, [])
+  useEffect(() => {
+    if (startupSyncStarted.current) return
+    startupSyncStarted.current = true
+    void (async () => {
+      await loadJobs()
+      try {
+        const statusResponse = await fetch(`${API}/api/email/gmail/status`)
+        if (!statusResponse.ok || !(await statusResponse.json()).connected) return
+        setGmailSyncStatus('Checking Gmail job alerts…')
+        const syncResponse = await fetch(`${API}/api/email/gmail/sync`, { method: 'POST' })
+        const result = await syncResponse.json()
+        if (!syncResponse.ok) throw new Error(typeof result.detail === 'string' ? result.detail : 'Gmail sync failed.')
+        const added = Number(result.imported_count || 0)
+        setGmailSyncStatus(added ? `Gmail checked · ${added} new ${added === 1 ? 'job' : 'jobs'} added` : 'Gmail checked · no new jobs')
+        await loadJobs()
+      } catch {
+        setGmailSyncStatus('Could not check Gmail alerts. Use Import SEEK email to retry.')
+      }
+    })()
+  }, [])
   useEffect(() => { if (selected) setForm(emptyForm(selected)) }, [selected])
 
   const suburbs = useMemo(() => {
@@ -97,12 +119,14 @@ function App() {
       const location = (job.location || '').toLowerCase()
       const inArea = area === 'All Melbourne' || areaTerms[area].some(term => location.includes(term))
       const inSuburb = suburb === 'all' || location.includes(suburb.toLowerCase())
-      return (!needle || text.includes(needle)) && (status === 'all' || (job.application?.status || 'new') === status) && inArea && inSuburb
+      const jobStatus = job.application?.status || 'new'
+      const inView = view === 'all' || ['applied', 'interview'].includes(jobStatus)
+      return inView && (!needle || text.includes(needle)) && (status === 'all' || jobStatus === status) && inArea && inSuburb
     }).sort((a, b) => sort === 'relevance'
       ? (b.match?.score || 0) - (a.match?.score || 0)
       : sort === 'oldest' ? +new Date(a.date_discovered) - +new Date(b.date_discovered)
         : +new Date(b.date_discovered) - +new Date(a.date_discovered))
-  }, [jobs, query, status, area, suburb, sort])
+  }, [jobs, query, status, area, suburb, sort, view])
 
   const newCount = jobs.filter(j => (j.application?.status || 'new') === 'new').length
   const appliedCount = jobs.filter(j => ['applied', 'interview'].includes(j.application?.status || '')).length
@@ -202,16 +226,18 @@ function App() {
     <aside className="sidebar">
       <div className="brand"><span className="brand-mark"><BriefcaseBusiness size={20}/></span><span>job<span className="brand-light">finder</span></span></div>
       <div className="side-label">WORKSPACE</div>
-      <button className="nav-item active"><span className="nav-icon"><BriefcaseBusiness size={17}/></span> Job dashboard <span className="nav-count">{jobs.length}</span></button>
+      <button className={`nav-item ${view === 'all' ? 'active' : ''}`} onClick={() => {setView('all');setStatus('all')}}><span className="nav-icon"><BriefcaseBusiness size={17}/></span> Job dashboard <span className="nav-count">{jobs.length}</span></button>
+      <button className={`nav-item ${view === 'applied' ? 'active' : ''}`} onClick={() => {setView('applied');setStatus('all')}}><span className="nav-icon"><Check size={17}/></span> Applied jobs <span className="nav-count">{appliedCount}</span></button>
       <div className="side-label sources-label">YOUR SEARCH</div>
       <div className="focus-card"><div className="focus-icon"><Sparkles size={16}/></div><div><strong>Melbourne focus</strong><span>Roles matched to your profile</span></div></div>
       <div className="sidebar-bottom"><div className="profile-avatar">E</div><div className="profile-name"><strong>Erik</strong><span>Candidate profile</span></div><ChevronDown size={15}/></div>
     </aside>
 
     <main className="main-area">
-      <header className="topbar"><div className="breadcrumb">Workspace <span>/</span> <strong>Job dashboard</strong></div><div className="topbar-right"><span className={`sync-dot ${apiOnline ? '' : 'offline'}`}/>{apiOnline ? 'API connected' : 'API offline'} <button className="avatar-small">E</button></div></header>
+      <header className="topbar"><div className="breadcrumb">Workspace <span>/</span> <strong>{view === 'applied' ? 'Applied jobs' : 'Job dashboard'}</strong></div><div className="topbar-right"><span className={`sync-dot ${apiOnline ? '' : 'offline'}`}/>{apiOnline ? 'API connected' : 'API offline'} <button className="avatar-small">E</button></div></header>
       <div className="content-wrap">
         <section className="welcome-row"><div><div className="eyebrow">{new Intl.DateTimeFormat('en-AU', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date()).toUpperCase()}</div><h1>Your next move starts here.</h1><p className="welcome-sub">A clearer view of the roles that fit you.</p></div><div className="header-actions"><button className="icon-button mobile-filter-toggle" onClick={() => setMobileFilters(!mobileFilters)} aria-label="Toggle filters"><SlidersHorizontal size={18}/></button><button className="import-email-button" onClick={() => {setEmailOpen(true);setEmailError('');setEmailPreview(null);setEmailPreviewSource('manual');void loadGmailStatus()}}><Mail size={15}/> Import SEEK email</button><button className="refresh-button" onClick={() => void loadJobs()}><ArrowDownUp size={15}/> Refresh listings</button></div></section>
+        {gmailSyncStatus && <div className="gmail-sync-status" role="status">{gmailSyncStatus}</div>}
 
         <section className="stat-grid">
           <div className="stat-card"><div className="stat-top"><span>New opportunities</span><span className="stat-icon green"><Sparkles size={16}/></span></div><div className="stat-value">{newCount}<small> roles</small></div><div className="stat-note">Ready for your review</div></div>
@@ -221,7 +247,7 @@ function App() {
         </section>
 
         <section className="jobs-section">
-          <div className="section-heading"><div><div className="section-kicker">YOUR OPPORTUNITIES</div><h2>Find your fit <span className="result-count">{filtered.length}</span></h2></div><div className="sort-wrap"><ArrowDownUp size={15}/><select aria-label="Sort jobs" value={sort} onChange={e => setSort(e.target.value)}><option value="relevance">Best match</option><option value="recent">Most recent</option><option value="oldest">Oldest first</option></select><ChevronDown size={14}/></div></div>
+          <div className="section-heading"><div><div className="section-kicker">{view === 'applied' ? 'YOUR APPLICATIONS' : 'YOUR OPPORTUNITIES'}</div><h2>{view === 'applied' ? 'Applied jobs' : 'Find your fit'} <span className="result-count">{filtered.length}</span></h2></div><div className="sort-wrap"><ArrowDownUp size={15}/><select aria-label="Sort jobs" value={sort} onChange={e => setSort(e.target.value)}><option value="relevance">Best match</option><option value="recent">Most recent</option><option value="oldest">Oldest first</option></select><ChevronDown size={14}/></div></div>
 
           <div className={`filter-bar ${mobileFilters ? 'filters-open' : ''}`}>
             <label className="search-box"><Search size={17}/><input placeholder="Search roles, companies, skills..." value={query} onChange={e => setQuery(e.target.value)}/>{query && <button onClick={() => setQuery('')} aria-label="Clear search"><X size={14}/></button>}</label>
@@ -235,7 +261,7 @@ function App() {
             <div className="job-logo">{job.company.slice(0, 1).toUpperCase()}</div>
             <div className="job-main"><div className="job-meta"><span>{job.company}</span><span className="meta-dot">·</span><span>{job.source?.name || 'Manual entry'}</span></div><h3>{job.title}</h3><div className="job-details"><span><MapPin size={14}/>{job.location || 'Location not listed'}</span>{job.employment_type && <span><BriefcaseBusiness size={14}/>{job.employment_type}</span>}{job.salary_text && <span className="salary">{job.salary_text}</span>}</div><div className="job-foot"><span className="date-label"><CalendarDays size={13}/>{job.date_posted ? `Posted ${dateText(job.date_posted)}` : `Added ${dateText(job.date_discovered)}`}</span><span className={`status-pill ${job.application?.status || 'new'}`}>{job.application?.status || 'new'}</span></div></div>
             <div className="job-match"><div className={`score-ring ${scoreTone(job.match?.score || 0)}`}><span>{job.match?.score ?? '—'}</span></div><span className="score-caption">FIT SCORE</span></div>
-            <div className="job-actions"><button className="details-button" onClick={() => setSelected(job)}>Track role <ArrowUpRight size={15}/></button>{job.original_url && <a className="external-link" href={job.original_url} target="_blank" rel="noreferrer" aria-label="Open application page"><ExternalLink size={17}/></a>}</div>
+            <div className="job-actions"><button className="details-button" onClick={() => setSelected(job)}>Track role <ArrowUpRight size={15}/></button>{job.original_url && <a className="details-button apply-link" href={job.original_url} target="_blank" rel="noreferrer">Open role <ExternalLink size={14}/></a>}</div>
           </article>)}</div>}
           {!loading && filtered.length > 0 && <div className="list-footer">Showing {filtered.length} of {jobs.length} roles <span>•</span> Sorted by {sort === 'relevance' ? 'best match' : sort === 'recent' ? 'most recent' : 'oldest first'}</div>}
         </section>

@@ -4,7 +4,7 @@ A personal job search aggregator and application tracker focused on graduate and
 
 ## Current stage
 
-Milestone 5 is in progress: preview-first Prosple RSS, forwarded SEEK Grad email import, and optional Gmail label import are available, with duplicate review. Gmail access uses a local OAuth client and requests read-only access. Scheduling and daily email reports remain future work.
+Milestone 5 is in progress: preview-first Prosple RSS and forwarded/Gmail SEEK Grad email imports are available. At Windows sign-in, the app can launch automatically and import new listings from the configured Gmail label. The dashboard includes direct job links and an applied jobs view. The daily email report remains future work.
 
 ## Architecture
 
@@ -34,6 +34,14 @@ After the first-time setup above, start both local servers and open the dashboar
 ```
 
 The launcher checks ports 8090–8110, reuses a running API when available, writes the matching local frontend API URL, starts the dashboard, and opens it in your browser. Stop the server windows with `Ctrl+C` when you are finished.
+
+To start the app automatically each time you sign in to Windows, run this once from PowerShell:
+
+```powershell
+.\install-startup.ps1
+```
+
+The scheduled task runs `run.ps1` in your user session, opens the dashboard, and the dashboard checks the configured Gmail label and imports new supported SEEK Grad listings. To remove the startup task, run `Unregister-ScheduledTask -TaskName 'Personal Job Finder' -Confirm:$false`.
 
 In a second terminal, run the dashboard:
 
@@ -79,12 +87,13 @@ pytest
 - `GET /api/email/gmail/status` reports whether local OAuth files exist.
 - `POST /api/email/gmail/connect` opens Google's installed-app consent flow and requests Gmail read-only access.
 - `POST /api/imports/gmail/seek-grad/preview` searches the configured Gmail label for SEEK Grad messages and returns a reviewable preview; `POST /api/imports/gmail/seek-grad/{batch_id}/commit` imports it after review.
+- `POST /api/email/gmail/sync` imports newly found supported SEEK Grad listings and skips exact URLs already saved. The dashboard calls it at startup when Gmail is connected.
 
 ### Optional Gmail connection
 
 The Codex Gmail connection is separate from this local app. To enable mailbox import, create a Google Cloud project, enable the Gmail API, configure the OAuth consent screen, and create an OAuth client with application type **Desktop app**. During personal testing, add the Gmail account as a test user if the consent screen is in testing mode. Download the client JSON to `secrets/gmail-oauth-client.json` (the `secrets/` directory is ignored by Git), then start the app and choose **Import SEEK email → Connect Gmail**. Sign in in the browser and review Google's consent screen; the app does not need or store your email password. The OAuth token is stored locally at `secrets/gmail-token.json` and is also ignored by Git.
 
-Create a Gmail label such as `SEEK Job Alerts`, and configure a Gmail filter to apply it to forwarded SEEK alert messages. Set `GMAIL_SEEK_LABEL` in `.env` to that exact label. `GMAIL_SEEK_QUERY` is an optional extra Gmail search query; leave it blank to search only that label, or set a sender filter if your forward preserves the original sender. The app only reads matching messages, leaves them untouched, and requires explicit preview then import. Google's `gmail.readonly` scope is classified as restricted and technically permits reading mailbox messages and settings, even though this app's query targets one label. Public distribution with this scope has OAuth verification requirements; this setup is for your local personal app. See Google's [Desktop OAuth guide](https://developers.google.com/identity/protocols/oauth2/native-app), [Gmail scope classifications](https://developers.google.com/workspace/gmail/api/auth/scopes), and [Gmail search/filter guide](https://developers.google.com/workspace/gmail/api/guides/filtering).
+Create a Gmail label such as `SEEK Job Alerts`, and configure a Gmail filter to apply it to forwarded SEEK alert messages. Set `GMAIL_SEEK_LABEL` in `.env` to that exact label. `GMAIL_SEEK_QUERY` is an optional extra Gmail search query; leave it blank to search only that label, or set a sender filter if your forward preserves the original sender. The app only reads matching messages and leaves them untouched. The manual **Preview Gmail alerts** action remains review-first; automatic startup sync imports newly found supported listings and skips exact URLs already saved. Google's `gmail.readonly` scope is classified as restricted and technically permits reading mailbox messages and settings, even though this app's query targets one label. Public distribution with this scope has OAuth verification requirements; this setup is for your local personal app. See Google's [Desktop OAuth guide](https://developers.google.com/identity/protocols/oauth2/native-app), [Gmail scope classifications](https://developers.google.com/workspace/gmail/api/auth/scopes), and [Gmail search/filter guide](https://developers.google.com/workspace/gmail/api/guides/filtering).
 
 ### Prosple RSS setup
 
@@ -105,13 +114,13 @@ The score is a transparent heuristic for prioritizing listings, not a prediction
 1. **Foundation (complete):** Configuration, logging, database models/migrations, and API skeleton.
 2. **Manual tracking and imports (complete):** Job entry, application status/details, CSV import preview, validation, duplicate review, and editable candidate background/skills profile.
 3. **Matching (complete):** Explainable score out of 100, matching reasons, matched/missing skills, and experience/qualification flags based on the editable profile.
-4. **Responsive dashboard (complete):** React listings, overview counts, search, Melbourne CBD/South East Melbourne/Bayside and suburb filters, status filtering, relevance/recency sorting, match explanations, status and application detail editing, and mobile layouts. Commuting distance remains a later enhancement if geocoding/routing data is available.
+4. **Responsive dashboard (complete):** React listings, overview counts, search, Melbourne CBD/South East Melbourne/Bayside and suburb filters, status filtering, relevance/recency sorting, match explanations, status and application detail editing, applied jobs view, direct job links, and mobile layouts. Commuting distance remains a later enhancement if geocoding/routing data is available.
 5. **Permitted job sources (in progress):** Prosple RSS import preview/commit with duplicate handling and source status; forwarded SEEK Grad email preview/commit with expired-job filtering. Add documented public company/ATS feeds individually. SEEK website automation remains disabled unless SEEK provides written consent or an applicable approved interface. Direct Gmail-label sync remains a separately configured, opt-in OAuth integration.
-6. **Daily automation and reports:** Configurable schedule and time zone, per-source failure isolation, and a morning report of the 10–15 most relevant new jobs with title, company, location, salary when available, score, explanation, and direct link. Exclude applied jobs and previously reported jobs unless a meaningful listing change is detected.
+6. **Daily automation and reports (in progress):** Windows sign-in startup and Gmail SEEK Grad import are available. Add per-source failure isolation and a morning email report of the 10–15 most relevant new jobs with title, company, location, salary when available, score, explanation, and direct link. Exclude applied jobs and previously reported jobs unless a meaningful listing change is detected.
 7. **Portfolio finish:** Automated tests, setup and architecture documentation, sample data, screenshots, and deployment guidance.
 
 ## Source and report constraints
 
-The app does not scrape job boards. Some major boards prohibit automated collection or do not offer a general job-seeker API. Before enabling a source, review its current terms and the specific feed/API conditions. SEEK's current [Website Terms](https://au.seek.com/terms) prohibit automated gathering without prior written consent or a specific compliant technical interface. Gmail sync is not implemented yet; Google requires OAuth authorization, and Gmail's `gmail.readonly` scope can access mailbox messages and settings, so a dedicated-label query and explicit consent will be required before enabling it. See [Google's OAuth scope list](https://developers.google.com/identity/protocols/oauth2/scopes).
+The app does not scrape job boards. Some major boards prohibit automated collection or do not offer a general job-seeker API. Before enabling a source, review its current terms and the specific feed/API conditions. SEEK's current [Website Terms](https://au.seek.com/terms) prohibit automated gathering without prior written consent or a specific compliant technical interface. Gmail sync uses OAuth, and Gmail's `gmail.readonly` scope can access mailbox messages and settings, so the app filters to a dedicated label and requires explicit user authorization. See [Google's OAuth scope list](https://developers.google.com/identity/protocols/oauth2/scopes).
 
-Gmail label import still needs local OAuth client setup and user authorization before it can access the mailbox. The daily scheduler will run only while a local app process is active. Reliable delivery while a computer is off requires an always-on host or external scheduled runner. Hosting, domain, and email-provider costs depend on the selected deployment and volume; the local development stack has no required service fees.
+Gmail label import requires a local OAuth client and user authorization. The automatic startup task runs only after Windows sign-in and only while the computer is on; the daily email report remains future work. Reliable delivery while a computer is off requires an always-on host or external scheduled runner. Hosting, domain, and email-provider costs depend on the selected deployment and volume; the local development stack has no required service fees.
