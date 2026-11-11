@@ -524,7 +524,10 @@ def preview_seek_grad_email(
     for entry in entries:
         writer.writerow(
             {
-                **entry,
+                "title": entry["title"],
+                "company": entry["company"],
+                "location": entry["location"],
+                "original_url": entry["original_url"],
                 "source": "SEEK Grad Alert",
                 "status": "new",
             }
@@ -602,7 +605,16 @@ def preview_gmail_seek_alerts(db: Session = Depends(get_db)) -> dict[str, object
     )
     writer.writeheader()
     for entry in entries:
-        writer.writerow({**entry, "source": "SEEK Grad Alert", "status": "new"})
+        writer.writerow(
+            {
+                "title": entry["title"],
+                "company": entry["company"],
+                "location": entry["location"],
+                "original_url": entry["original_url"],
+                "source": "SEEK Grad Alert",
+                "status": "new",
+            }
+        )
     result = preview_csv(
         CsvPreviewRequest(filename="SEEK Grad email preview - Gmail", content=output.getvalue()), db
     )
