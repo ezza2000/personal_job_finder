@@ -81,7 +81,7 @@ pytest
 - `POST /api/imports/csv/{batch_id}/commit` imports valid preview rows after confirmation. Exact URLs already present are reported and skipped; similar titles/companies are imported and flagged.
 - `GET /api/duplicates` lists unresolved possible duplicates; `PATCH /api/duplicates/{id}` sets `review_state` to `confirmed_duplicate` or `confirmed_distinct`.
 - `GET /api/sources` lists import channels and their last check/error state.
-- `POST /api/imports/prosple/rss/preview` fetches the configured public feed, checks possible duplicates, and stores a reviewable preview.
+- `POST /api/imports/prosple/rss/preview` fetches the configured public feed, imports any supplied closing/deadline date, checks possible duplicates, and stores a reviewable preview.
 - `POST /api/imports/prosple/rss/{batch_id}/commit` imports valid rows from that preview; exact URLs are skipped and possible duplicates are flagged.
 - `POST /api/imports/seek-grad-email/preview` accepts pasted forwarded text, HTML, or a downloaded `.eml` file, parses SEEK Grad cards, skips expired listings, and returns a duplicate-aware preview.
 - `POST /api/imports/seek-grad-email/{batch_id}/commit` imports valid listings from a reviewed email preview.

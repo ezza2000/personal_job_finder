@@ -284,7 +284,13 @@ def _csv_row(raw: dict[str, str | None], row_number: int) -> dict[str, object]:
         except ValueError:
             errors.append("Application date must use YYYY-MM-DD")
 
-    closing_date = fields.get("closing_date") or ""
+    closing_date = (
+        fields.get("closing_date")
+        or fields.get("closing")
+        or fields.get("deadline")
+        or fields.get("application_deadline")
+        or ""
+    )
     if closing_date:
         try:
             date.fromisoformat(closing_date)

@@ -99,6 +99,18 @@ def _posted_date(value: str | None) -> str | None:
             try:
                 return date.fromisoformat(value[:10]).isoformat()
             except ValueError:
+                for date_format in (
+                    "%d %B %Y",
+                    "%d %b %Y",
+                    "%B %d, %Y",
+                    "%b %d, %Y",
+                    "%d/%m/%Y",
+                    "%Y/%m/%d",
+                ):
+                    try:
+                        return datetime.strptime(value.strip(), date_format).date().isoformat()
+                    except ValueError:
+                        continue
                 return None
 
 
@@ -130,6 +142,28 @@ def _normalize_item(item: ET.Element) -> dict[str, str | None] | None:
     if company:
         company = re.sub(r"\s+", " ", company).strip()
 
+    closing_date = _posted_date(
+        _text(
+            item,
+            "closingdate",
+            "closing_date",
+            "closing-date",
+            "close_date",
+            "closedate",
+            "closing",
+            "deadline",
+            "applicationdeadline",
+            "application_deadline",
+            "applicationenddate",
+            "application_end_date",
+            "expirationdate",
+            "expiration_date",
+            "expires",
+            "validthrough",
+            "enddate",
+        )
+    )
+
     return {
         "title": title,
         "company": company,
@@ -138,6 +172,7 @@ def _normalize_item(item: ET.Element) -> dict[str, str | None] | None:
         "employment_type": _text(item, "employmenttype", "jobtype", "employment"),
         "description": _plain_text(_text(item, "description", "summary", "encoded", "content")),
         "date_posted": _posted_date(_text(item, "pubdate", "published", "updated", "date")),
+        "closing_date": closing_date,
         "original_url": url,
         "source": "Prosple RSS",
         "status": "new",
