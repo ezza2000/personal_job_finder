@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     gmail_token_file: str = "secrets/gmail-token.json"
     gmail_seek_label: str = "SEEK Job Alerts"
     gmail_seek_query: str = ""
+    gmail_prosple_label: str = ""
+    gmail_prosple_query: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

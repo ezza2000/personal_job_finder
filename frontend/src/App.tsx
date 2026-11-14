@@ -30,7 +30,7 @@ type EmailPreview = {
   rows: Array<{
     row_number: number; valid: boolean; errors: string[]
     duplicates: Array<{ similarity: number; title: string; company: string }>
-    job: { title: string; company: string; location?: string | null; original_url?: string | null }
+    job: { title: string; company: string; location?: string | null; salary_text?: string | null; closing_date?: string | null; original_url?: string | null }
   }>
 }
 
@@ -66,13 +66,14 @@ function App() {
   const [saved, setSaved] = useState(false)
   const [mobileFilters, setMobileFilters] = useState(false)
   const [emailOpen, setEmailOpen] = useState(false)
+  const [emailImportKind, setEmailImportKind] = useState<'seek' | 'prosple'>('seek')
   const [emailBody, setEmailBody] = useState('')
   const [emailPreview, setEmailPreview] = useState<EmailPreview | null>(null)
   const [emailError, setEmailError] = useState('')
   const [emailBusy, setEmailBusy] = useState(false)
   const [gmailConnected, setGmailConnected] = useState(false)
   const [gmailClientConfigured, setGmailClientConfigured] = useState(false)
-  const [emailPreviewSource, setEmailPreviewSource] = useState<'manual' | 'gmail'>('manual')
+  const [emailPreviewSource, setEmailPreviewSource] = useState<'manual' | 'gmail-seek' | 'gmail-prosple'>('manual')
   const [gmailSyncStatus, setGmailSyncStatus] = useState('')
   const startupSyncStarted = useRef(false)
   const [deletingJobId, setDeletingJobId] = useState<number | null>(null)
@@ -99,11 +100,18 @@ function App() {
         const syncResponse = await fetch(`${API}/api/email/gmail/sync`, { method: 'POST' })
         const result = await syncResponse.json()
         if (!syncResponse.ok) throw new Error(typeof result.detail === 'string' ? result.detail : 'Gmail sync failed.')
-        const added = Number(result.imported_count || 0)
-        setGmailSyncStatus(added ? `Gmail checked · ${added} new ${added === 1 ? 'job' : 'jobs'} added` : 'Gmail checked · no new jobs')
+        const prospleResponse = await fetch(`${API}/api/email/gmail/prosple/sync`, { method: 'POST' })
+        const prospleResult = await prospleResponse.json()
+        if (!prospleResponse.ok) throw new Error(typeof prospleResult.detail === 'string' ? prospleResult.detail : 'Prosple Gmail sync failed.')
+        const seekAdded = Number(result.imported_count || 0)
+        const prospleAdded = Number(prospleResult.imported_count || 0)
+        const added = seekAdded + prospleAdded
+        setGmailSyncStatus(added
+          ? `Gmail checked · ${seekAdded} SEEK + ${prospleAdded} Prosple ${added === 1 ? 'job' : 'jobs'} added`
+          : 'Gmail checked · no new SEEK or Prosple jobs')
         await loadJobs()
       } catch {
-        setGmailSyncStatus('Could not check Gmail alerts. Use Import SEEK email to retry.')
+        setGmailSyncStatus('Could not check Gmail alerts. Use the SEEK or Prosple email import to retry.')
       }
     })()
   }, [])
@@ -182,11 +190,13 @@ function App() {
     finally { setEmailBusy(false) }
   }
 
-  const commitSeekEmail = async () => {
+  const commitEmailPreview = async () => {
     if (!emailPreview) return
     setEmailBusy(true); setEmailError('')
     try {
-      const endpoint = emailPreviewSource === 'gmail'
+      const endpoint = emailPreviewSource === 'gmail-prosple'
+        ? `${API}/api/imports/gmail/prosple/${emailPreview.batch_id}/commit`
+        : emailPreviewSource === 'gmail-seek'
         ? `${API}/api/imports/gmail/seek-grad/${emailPreview.batch_id}/commit`
         : `${API}/api/imports/seek-grad-email/${emailPreview.batch_id}/commit`
       const response = await fetch(endpoint, { method: 'POST' })
@@ -218,9 +228,12 @@ function App() {
   }
 
   const previewGmail = async () => {
-    setEmailBusy(true); setEmailError(''); setEmailPreview(null); setEmailPreviewSource('gmail')
+    setEmailBusy(true); setEmailError(''); setEmailPreview(null); setEmailPreviewSource(emailImportKind === 'prosple' ? 'gmail-prosple' : 'gmail-seek')
     try {
-      const response = await fetch(`${API}/api/imports/gmail/seek-grad/preview`, { method: 'POST' })
+      const endpoint = emailImportKind === 'prosple'
+        ? `${API}/api/imports/gmail/prosple/preview`
+        : `${API}/api/imports/gmail/seek-grad/preview`
+      const response = await fetch(endpoint, { method: 'POST' })
       const result = await response.json()
       if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : 'Could not read Gmail alerts.')
       setEmailPreview(result)
@@ -250,7 +263,7 @@ function App() {
     <main className="main-area">
       <header className="topbar"><div className="breadcrumb">Workspace <span>/</span> <strong>{view === 'applied' ? 'Applied jobs' : 'Job dashboard'}</strong></div><div className="topbar-right"><span className={`sync-dot ${apiOnline ? '' : 'offline'}`}/>{apiOnline ? 'API connected' : 'API offline'} <button className="avatar-small">E</button></div></header>
       <div className="content-wrap">
-        <section className="welcome-row"><div><div className="eyebrow">{new Intl.DateTimeFormat('en-AU', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date()).toUpperCase()}</div><h1>Your next move starts here.</h1><p className="welcome-sub">A clearer view of the roles that fit you.</p></div><div className="header-actions"><button className="icon-button mobile-filter-toggle" onClick={() => setMobileFilters(!mobileFilters)} aria-label="Toggle filters"><SlidersHorizontal size={18}/></button><button className="import-email-button" onClick={() => {setEmailOpen(true);setEmailError('');setEmailPreview(null);setEmailPreviewSource('manual');void loadGmailStatus()}}><Mail size={15}/> Import SEEK email</button><button className="refresh-button" onClick={() => void loadJobs()}><ArrowDownUp size={15}/> Refresh listings</button></div></section>
+        <section className="welcome-row"><div><div className="eyebrow">{new Intl.DateTimeFormat('en-AU', { weekday: 'long', day: 'numeric', month: 'long' }).format(new Date()).toUpperCase()}</div><h1>Your next move starts here.</h1><p className="welcome-sub">A clearer view of the roles that fit you.</p></div><div className="header-actions"><button className="icon-button mobile-filter-toggle" onClick={() => setMobileFilters(!mobileFilters)} aria-label="Toggle filters"><SlidersHorizontal size={18}/></button><button className="import-email-button" onClick={() => {setEmailImportKind('seek');setEmailOpen(true);setEmailError('');setEmailPreview(null);setEmailPreviewSource('manual');void loadGmailStatus()}}><Mail size={15}/> Import SEEK email</button><button className="import-email-button" onClick={() => {setEmailImportKind('prosple');setEmailOpen(true);setEmailError('');setEmailPreview(null);setEmailPreviewSource('gmail-prosple');void loadGmailStatus()}}><Mail size={15}/> Import Prosple email</button><button className="refresh-button" onClick={() => void loadJobs()}><ArrowDownUp size={15}/> Refresh listings</button></div></section>
         {gmailSyncStatus && <div className="gmail-sync-status" role="status">{gmailSyncStatus}</div>}
 
         <section className="stat-grid">
@@ -294,15 +307,15 @@ function App() {
       </div><div className="modal-actions">{saved && <span className="saved-note"><Check size={15}/> Saved</span>}<button className="cancel-button" onClick={() => setSelected(null)}>Close</button><button className="save-button" disabled={saving} onClick={() => void saveApplication()}>{saving ? 'Saving...' : 'Save application'}</button></div>
     </section></div>}
     {emailOpen && <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setEmailOpen(false) }}><section className="detail-modal email-import-modal" role="dialog" aria-modal="true" aria-labelledby="email-modal-title">
-      <div className="modal-head"><div><div className="section-kicker">SEEK GRAD ALERT</div><h2 id="email-modal-title">Import jobs from an email</h2><div className="modal-company">Paste the forwarded alert text. We preview listings and duplicates before saving.</div></div><button className="icon-button" onClick={() => setEmailOpen(false)} aria-label="Close import"><X size={19}/></button></div>
-      <div className="modal-scroll"><div className="email-import-help">Gmail connection is optional. It requests read-only mailbox access and searches only the configured label plus SEEK Grad sender. Gmail still grants this scope access to mailbox messages and settings. The preview ignores listings whose closing date has passed.</div>
-        <div className="gmail-connect-row"><span>{gmailConnected ? 'Gmail connected' : gmailClientConfigured ? 'OAuth file ready' : 'Gmail not configured'}</span><button className="cancel-button" disabled={emailBusy || !gmailClientConfigured} onClick={() => void connectGmail()}>{gmailConnected ? 'Reconnect Gmail' : 'Connect Gmail'}</button><button className="save-button" disabled={emailBusy || !gmailConnected} onClick={() => void previewGmail()}>{emailBusy ? 'Reading...' : 'Preview Gmail alerts'}</button></div>
-        <div className="email-import-help">To import manually, open a forwarded alert in Gmail, choose More → Download message, then select its .eml file, or paste the message body.</div>
+      <div className="modal-head"><div><div className="section-kicker">{emailImportKind === 'prosple' ? 'PROSPLE JOB ALERT' : 'SEEK GRAD ALERT'}</div><h2 id="email-modal-title">Import jobs from {emailImportKind === 'prosple' ? 'Prosple' : 'SEEK'}</h2><div className="modal-company">Preview listings and duplicates before saving them to your dashboard.</div></div><button className="icon-button" onClick={() => setEmailOpen(false)} aria-label="Close import"><X size={19}/></button></div>
+      <div className="modal-scroll"><div className="email-import-help">Gmail access is read-only. {emailImportKind === 'prosple' ? 'The importer searches for recent Prosple job-alert emails.' : 'The importer searches the configured SEEK label and Grad sender.'} Gmail grants the OAuth scope mailbox-wide access. Expired listings are skipped.</div>
+        <div className="gmail-connect-row"><span>{gmailConnected ? 'Gmail connected' : gmailClientConfigured ? 'OAuth file ready' : 'Gmail not configured'}</span><button className="cancel-button" disabled={emailBusy || !gmailClientConfigured} onClick={() => void connectGmail()}>{gmailConnected ? 'Reconnect Gmail' : 'Connect Gmail'}</button><button className="save-button" disabled={emailBusy || !gmailConnected} onClick={() => void previewGmail()}>{emailBusy ? 'Reading...' : `Preview Gmail ${emailImportKind === 'prosple' ? 'Prosple' : 'SEEK'} alerts`}</button></div>
+        {emailImportKind === 'seek' && <><div className="email-import-help">To import manually, open a forwarded alert in Gmail, choose More → Download message, then select its .eml file, or paste the message body.</div>
         <label className="email-file-label">Choose email file<input type="file" accept=".eml,message/rfc822" onChange={e => void loadEmailFile(e)}/></label>
-        <label className="email-body-label">Forwarded email body<textarea rows={12} value={emailBody} onChange={e => {setEmailBody(e.target.value);setEmailPreview(null)}} placeholder="Paste the SEEK Grad alert body here..."/></label>
+        <label className="email-body-label">Forwarded email body<textarea rows={12} value={emailBody} onChange={e => {setEmailBody(e.target.value);setEmailPreview(null)}} placeholder="Paste the SEEK Grad alert body here..."/></label></>}
         {emailError && <div className="error-banner"><CircleHelp size={16}/>{emailError}</div>}
-        {emailPreview && <div className="email-preview"><div className="email-preview-summary"><strong>{emailPreview.valid_rows} ready to import</strong><span>{emailPreview.expired_skipped} expired skipped · {emailPreview.possible_duplicate_rows} possible duplicate(s)</span></div>{emailPreview.rows.map(row => <div className="email-preview-row" key={row.row_number}><strong>{row.job.title}</strong><span>{row.job.company || 'Company not found'} · {row.job.location || 'Location not listed'}</span>{row.duplicates.length > 0 && <small>Possible match: {row.duplicates.map(d => `${d.title} at ${d.company}`).join('; ')}</small>}{row.errors.length > 0 && <small>{row.errors.join(', ')}</small>}</div>)}</div>}
-      </div><div className="modal-actions"><button className="cancel-button" onClick={() => setEmailOpen(false)}>Close</button>{emailPreview ? <button className="save-button" disabled={emailBusy || emailPreview.valid_rows === 0} onClick={() => void commitSeekEmail()}>{emailBusy ? 'Importing...' : 'Import previewed jobs'}</button> : <button className="save-button" disabled={emailBusy || !emailBody.trim()} onClick={() => void previewSeekEmail()}>{emailBusy ? 'Reading alert...' : 'Preview jobs'}</button>}</div>
+        {emailPreview && <div className="email-preview"><div className="email-preview-summary"><strong>{emailPreview.valid_rows} ready to import</strong><span>{emailPreview.expired_skipped} expired skipped · {emailPreview.possible_duplicate_rows} possible duplicate(s)</span></div>{emailPreview.rows.map(row => <div className="email-preview-row" key={row.row_number}><strong>{row.job.title}</strong><span>{row.job.company || 'Company not found'} · {row.job.location || 'Location not listed'}{row.job.salary_text ? ` · ${row.job.salary_text}` : ''}{row.job.closing_date ? ` · Closes ${closingDateText(row.job.closing_date)}` : ''}</span>{row.job.original_url && <a href={row.job.original_url} target="_blank" rel="noreferrer">View Prosple listing</a>}{row.duplicates.length > 0 && <small>Possible match: {row.duplicates.map(d => `${d.title} at ${d.company}`).join('; ')}</small>}{row.errors.length > 0 && <small>{row.errors.join(', ')}</small>}</div>)}</div>}
+      </div><div className="modal-actions"><button className="cancel-button" onClick={() => setEmailOpen(false)}>Close</button>{emailPreview ? <button className="save-button" disabled={emailBusy || emailPreview.valid_rows === 0} onClick={() => void commitEmailPreview()}>{emailBusy ? 'Importing...' : 'Import previewed jobs'}</button> : emailImportKind === 'seek' ? <button className="save-button" disabled={emailBusy || !emailBody.trim()} onClick={() => void previewSeekEmail()}>{emailBusy ? 'Reading alert...' : 'Preview pasted email'}</button> : <button className="save-button" disabled={emailBusy || !gmailConnected} onClick={() => void previewGmail()}>{emailBusy ? 'Reading alert...' : 'Preview Prosple email'}</button>}</div>
     </section></div>}
   </div>
 }

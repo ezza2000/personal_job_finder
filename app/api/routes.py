@@ -37,10 +37,12 @@ from app.services.gmail_import import (
     GmailSetupError,
     authorize_gmail,
     gmail_status,
+    read_prosple_alerts,
     read_seek_alerts,
 )
 from app.services.matching import analyze_job
 from app.services.normalization import compare_jobs, normalize_text
+from app.services.prosple_email import ProspleEmailParseError, parse_prosple_job_alert
 from app.services.prosple_rss import FeedImportError, fetch_prosple_feed
 from app.services.seek_grad_email import SeekEmailParseError, parse_seek_grad_email
 
@@ -692,6 +694,150 @@ def _read_gmail_seek_entries() -> tuple[list[dict[str, str | None]], int, int, i
     return entries, found_count, expired_count, len(messages)
 
 
+def _read_gmail_prosple_entries() -> tuple[list[dict[str, str | None]], int, int, int]:
+    """Fetch and parse recent Prosple job alert emails from Gmail."""
+    settings = get_settings()
+    try:
+        messages = read_prosple_alerts(
+            settings.gmail_oauth_client_file,
+            settings.gmail_token_file,
+            settings.gmail_prosple_label,
+            settings.gmail_prosple_query,
+        )
+    except GmailSetupError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    entries: list[dict[str, str | None]] = []
+    found_count = 0
+    expired_count = 0
+    seen_urls: set[str] = set()
+    for message in messages:
+        try:
+            parsed = parse_prosple_job_alert(message["raw"])
+        except ProspleEmailParseError:
+            continue
+        found_count += int(parsed["found_count"])
+        expired_count += int(parsed["expired_count"])
+        for entry in parsed["jobs"]:
+            url = entry["original_url"]
+            if url and url not in seen_urls:
+                entries.append(entry)
+                seen_urls.add(url)
+    return entries, found_count, expired_count, len(messages)
+
+
+@router.post("/imports/gmail/prosple/preview", status_code=status.HTTP_201_CREATED)
+def preview_gmail_prosple_alerts(db: Session = Depends(get_db)) -> dict[str, object]:
+    """Create a duplicate-aware preview of Prosple listings found in Gmail."""
+    entries, found_count, expired_count, message_count = _read_gmail_prosple_entries()
+    if not message_count:
+        raise HTTPException(
+            status_code=422, detail="No matching Prosple alert emails found in Gmail."
+        )
+    if not entries:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Found {found_count} Prosple listings, but none are active and supported.",
+        )
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(
+        output,
+        fieldnames=[
+            "title",
+            "company",
+            "location",
+            "salary",
+            "employment_type",
+            "description",
+            "date_posted",
+            "original_url",
+            "closing_date",
+            "source",
+            "status",
+        ],
+    )
+    writer.writeheader()
+    for entry in entries:
+        writer.writerow(entry)
+    result = preview_csv(
+        CsvPreviewRequest(filename="Prosple email preview - Gmail", content=output.getvalue()), db
+    )
+    result.update(
+        {
+            "source": "Gmail · Prosple",
+            "messages_checked": message_count,
+            "found_count": found_count,
+            "expired_skipped": expired_count,
+        }
+    )
+    return result
+
+
+@router.post("/email/gmail/prosple/sync")
+def sync_gmail_prosple_alerts(db: Session = Depends(get_db)) -> dict[str, object]:
+    """Import active Prosple listings from Gmail, skipping exact and recent duplicates."""
+    entries, found_count, expired_count, message_count = _read_gmail_prosple_entries()
+    existing_jobs = list(db.scalars(select(Job)))
+    existing_urls = {job.original_url for job in existing_jobs if job.original_url}
+    recent_cutoff = date.today() - timedelta(days=60)
+    recent_signatures = {
+        (job.title_normalized, job.company_normalized, normalize_text(job.location or ""))
+        for job in existing_jobs
+        if job.date_discovered.date() >= recent_cutoff
+    }
+    new_entries = []
+    duplicate_count = 0
+    for entry in entries:
+        signature = (
+            normalize_text(entry["title"] or ""),
+            normalize_text(entry["company"] or ""),
+            normalize_text(entry["location"] or ""),
+        )
+        if entry["original_url"] in existing_urls or signature in recent_signatures:
+            duplicate_count += 1
+            continue
+        new_entries.append(entry)
+        if entry["original_url"]:
+            existing_urls.add(entry["original_url"])
+        recent_signatures.add(signature)
+    if new_entries:
+        output = io.StringIO(newline="")
+        writer = csv.DictWriter(
+            output,
+            fieldnames=[
+                "title",
+                "company",
+                "location",
+                "salary",
+                "employment_type",
+                "description",
+                "date_posted",
+                "original_url",
+                "closing_date",
+                "source",
+                "status",
+            ],
+        )
+        writer.writeheader()
+        writer.writerows(new_entries)
+        preview = preview_csv(
+            CsvPreviewRequest(
+                filename="Prosple email preview - Gmail auto sync", content=output.getvalue()
+            ),
+            db,
+        )
+        imported = commit_csv(int(preview["batch_id"]), db)
+    else:
+        imported = {"imported_count": 0, "exact_duplicate_rows_skipped": []}
+    return {
+        "source": "Gmail · Prosple",
+        "messages_checked": message_count,
+        "listings_found": found_count,
+        "expired_skipped": expired_count,
+        "duplicate_listings_skipped": duplicate_count,
+        **imported,
+    }
+
+
 @router.post("/email/gmail/sync")
 def sync_gmail_seek_alerts(db: Session = Depends(get_db)) -> dict[str, object]:
     """Import new supported listings from Gmail, skipping exact URLs already saved."""
@@ -799,7 +945,7 @@ def commit_csv(batch_id: int, db: Session = Depends(get_db)) -> dict[str, object
             "rss"
             if source_name == "Prosple RSS"
             else "email_import"
-            if source_name == "SEEK Grad Alert"
+            if source_name in {"SEEK Grad Alert", "Prosple Email"}
             else "csv_import"
         )
         source = _get_source(db, source_name, source_type)
@@ -883,6 +1029,15 @@ def commit_gmail_seek_grad(batch_id: int, db: Session = Depends(get_db)) -> dict
     batch = db.get(ImportBatch, batch_id)
     if batch is None or batch.filename != "SEEK Grad email preview - Gmail":
         raise HTTPException(status_code=404, detail="Gmail SEEK Grad preview not found")
+    return commit_csv(batch_id, db)
+
+
+@router.post("/imports/gmail/prosple/{batch_id}/commit")
+def commit_gmail_prosple(batch_id: int, db: Session = Depends(get_db)) -> dict[str, object]:
+    """Commit valid Prosple listings from a previously reviewed Gmail preview."""
+    batch = db.get(ImportBatch, batch_id)
+    if batch is None or batch.filename != "Prosple email preview - Gmail":
+        raise HTTPException(status_code=404, detail="Gmail Prosple preview not found")
     return commit_csv(batch_id, db)
 
 

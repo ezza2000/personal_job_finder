@@ -101,3 +101,46 @@ def read_seek_alerts(
         raise GmailSetupError(
             "Gmail could not be searched. Check the label, permissions, and Gmail API setup."
         ) from exc
+
+
+def read_prosple_alerts(
+    client_file: str, token_file: str, label: str = "", query: str = "", limit: int = 30
+) -> list[dict[str, str]]:
+    """Read recent Prosple alert messages from Gmail without modifying the mailbox."""
+    credentials = _credentials(client_file, token_file)
+    default_query = (
+        "newer_than:30d "
+        '{from:notifications@prosple.com from:richard@prosple.com "your pathway starts here"}'
+    )
+    search = " ".join(
+        part
+        for part in (
+            f'label:"{label.strip()}"' if label.strip() else "",
+            query.strip() or default_query,
+        )
+        if part
+    )
+    try:
+        service = build("gmail", "v1", credentials=credentials, cache_discovery=False)
+        listed = (
+            service.users()
+            .messages()
+            .list(userId="me", q=search, maxResults=min(max(limit, 1), 100))
+            .execute()
+        )
+        output: list[dict[str, str]] = []
+        for item in listed.get("messages", []):
+            message = (
+                service.users().messages().get(userId="me", id=item["id"], format="raw").execute()
+            )
+            import base64
+
+            raw = base64.urlsafe_b64decode(message["raw"] + "==").decode("utf-8", errors="replace")
+            output.append({"id": item["id"], "raw": raw})
+        return output
+    except HttpError as exc:
+        logger.warning("Gmail API request failed with HTTP %s", exc.resp.status)
+        raise GmailSetupError(
+            "Gmail could not be searched for Prosple alerts. Check the label, permissions, "
+            "and Gmail API setup."
+        ) from exc
